@@ -3,6 +3,7 @@ import { supabase, supabaseConfigError } from './supabase';
 import {
   Check,
   Copy,
+  Download,
   Edit,
   ListMusic,
   MessageCircle,
@@ -40,6 +41,8 @@ export default function App() {
   const [mensagem, setMensagem] = useState('');
   const [carregando, setCarregando] = useState(false);
   const [tela, setTela] = useState('playlist');
+  const [installPrompt, setInstallPrompt] = useState(null);
+  const [instalado, setInstalado] = useState(false);
 
   async function carregarMusicas() {
     setCarregando(true);
@@ -55,6 +58,30 @@ export default function App() {
 
   useEffect(() => {
     if (!supabaseConfigError) carregarMusicas();
+  }, []);
+
+  useEffect(() => {
+    const standalone =
+      window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    setInstalado(standalone);
+
+    function capturarPrompt(event) {
+      event.preventDefault();
+      setInstallPrompt(event);
+    }
+
+    function marcarInstalado() {
+      setInstalado(true);
+      setInstallPrompt(null);
+    }
+
+    window.addEventListener('beforeinstallprompt', capturarPrompt);
+    window.addEventListener('appinstalled', marcarInstalado);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', capturarPrompt);
+      window.removeEventListener('appinstalled', marcarInstalado);
+    };
   }, []);
 
   const filtradas = useMemo(() => {
@@ -174,6 +201,13 @@ export default function App() {
     window.open(`https://wa.me/?text=${encodeURIComponent(montarTexto())}`, '_blank');
   }
 
+  async function instalarApp() {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    await installPrompt.userChoice;
+    setInstallPrompt(null);
+  }
+
   if (supabaseConfigError) {
     return (
       <div className={appShell}>
@@ -198,9 +232,16 @@ export default function App() {
             <span>Lista de Músicas</span>
           </h1>
         </div>
-        <button className={iconButton} onClick={() => abrirFormulario()} title="Adicionar música">
-          <Plus className="h-5 w-5" />
-        </button>
+        <div className="flex shrink-0 gap-2">
+          {installPrompt && !instalado && (
+            <button className={iconButton} onClick={instalarApp} title="Instalar aplicativo">
+              <Download className="h-5 w-5" />
+            </button>
+          )}
+          <button className={iconButton} onClick={() => abrirFormulario()} title="Adicionar música">
+            <Plus className="h-5 w-5" />
+          </button>
+        </div>
       </header>
 
       {tela === 'playlist' && (
