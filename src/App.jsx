@@ -9,6 +9,9 @@ import {
   ListMusic,
   LogOut,
   Music,
+  Pause,
+  Play,
+  PlayCircle,
   Plus,
   Save,
   Search,
@@ -65,6 +68,13 @@ function normalizarData(data) {
   return `${dia}/${mes}/${ano}`;
 }
 
+function extrairYouTubeId(url) {
+  if (!url) return null;
+  const regex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
+  const match = url.match(regex);
+  return match ? match[1] : null;
+}
+
 function montarTextoLista(lista, musicas) {
   const linhas = [];
   linhas.push(`🎵 *${lista?.titulo || 'Lista de músicas'}*`);
@@ -100,6 +110,7 @@ export default function App() {
   const [form, setForm] = useState(vazio);
   const [editando, setEditando] = useState(null);
   const [busca, setBusca] = useState('');
+  const [previewMusica, setPreviewMusica] = useState(null);
   const [tituloLista, setTituloLista] = useState('Lista de músicas');
   const [dataLista, setDataLista] = useState(new Date().toISOString().slice(0, 10));
   const [observacao, setObservacao] = useState('');
@@ -837,12 +848,19 @@ export default function App() {
                         {m.artista || 'Sem artista'} {m.categoria ? `• ${m.categoria}` : ''} {m.duracao ? `• ${m.duracao}` : ''}
                       </span>
                     </div>
-                    {isAdmin && (
-                      <div className="flex gap-2">
-                        <button className={iconButton} onClick={() => abrirFormulario(m)} title="Editar"><Edit className="h-4 w-4" /></button>
-                        <button className={iconButton} onClick={() => excluirMusica(m.id)} title="Excluir"><Trash2 className="h-4 w-4" /></button>
-                      </div>
-                    )}
+                    <div className="flex gap-2">
+                      {m.link && extrairYouTubeId(m.link) && (
+                        <button className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-red-500 text-white hover:bg-red-600" onClick={() => setPreviewMusica(m)} title="Ouvir">
+                          <PlayCircle className="h-5 w-5" />
+                        </button>
+                      )}
+                      {isAdmin && (
+                        <>
+                          <button className={iconButton} onClick={() => abrirFormulario(m)} title="Editar"><Edit className="h-4 w-4" /></button>
+                          <button className={iconButton} onClick={() => excluirMusica(m.id)} title="Excluir"><Trash2 className="h-4 w-4" /></button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </article>
               );
@@ -1040,6 +1058,43 @@ export default function App() {
           <button className={`rounded-xl px-1 py-2 text-xs font-bold ${tela === 'form' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => abrirFormulario()}><Plus className="mx-auto mb-1 h-5 w-5" />Add</button>
         </div>
       </nav>
+
+      {/* Modal de Preview da Música */}
+      {previewMusica && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" onClick={() => setPreviewMusica(null)}>
+          <div className={`${panel} w-full max-w-lg`} onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between">
+              <div className="min-w-0 flex-1">
+                <h3 className="truncate text-lg font-black text-white">{previewMusica.titulo}</h3>
+                <p className="truncate text-sm text-slate-300">{previewMusica.artista || 'Sem artista'}</p>
+              </div>
+              <button className={iconButton} onClick={() => setPreviewMusica(null)} title="Fechar">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="aspect-video w-full overflow-hidden rounded-xl bg-black">
+              <iframe
+                className="h-full w-full"
+                src={`https://www.youtube.com/embed/${extrairYouTubeId(previewMusica.link)}?autoplay=1`}
+                title={previewMusica.titulo}
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowFullScreen
+              />
+            </div>
+            <div className="mt-4 flex gap-2">
+              <a
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-red-500 px-4 py-3 font-bold text-white hover:bg-red-600"
+                href={previewMusica.link}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Play className="h-5 w-5" />
+                Abrir no YouTube
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
