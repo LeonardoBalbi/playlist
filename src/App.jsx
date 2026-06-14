@@ -3,21 +3,61 @@ import { supabase, supabaseConfigError } from './supabase';
 import {
   Check,
   Copy,
-  Download,
   Edit,
-  FolderOpen,
+  Inbox,
+  ListChecks,
   ListMusic,
-  MessageCircle,
+  LogOut,
   Music,
   Plus,
   Save,
   Search,
   Send,
+  Shield,
   Trash2,
+  User,
   X,
 } from 'lucide-react';
 
 const vazio = { titulo: '', artista: '', categoria: '', link: '', duracao: '' };
+const appShell = 'mx-auto flex min-h-screen w-full max-w-md flex-col px-4 pb-28 pt-5 sm:max-w-2xl lg:max-w-5xl';
+const panel = 'rounded-2xl border border-white/15 bg-white/10 p-4 shadow-2xl shadow-black/30 backdrop-blur-xl';
+const input = 'w-full rounded-xl border border-white/15 bg-white/10 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-300 focus:border-teal-300 focus:bg-white/15';
+const iconButton = 'inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-white/10 text-white hover:bg-white/20';
+
+function normalizarTexto(texto) {
+  if (!texto) return '';
+  return texto
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+function erroEmailNaoConfirmado(error) {
+  const texto = `${error?.code || ''} ${error?.message || ''}`.toLowerCase();
+  return texto.includes('email not confirmed') || texto.includes('email_not_confirmed');
+}
+
+function mensagemLogin(error) {
+  const texto = error?.message || 'Nao foi possivel entrar.';
+  if (texto.toLowerCase().includes('invalid login credentials')) {
+    return 'E-mail ou senha invalidos.';
+  }
+  return texto;
+}
+
+function erroSchemaCache(error, nomeObjeto = '') {
+  const texto = `${error?.code || ''} ${error?.message || ''} ${error?.details || ''}`.toLowerCase();
+  return texto.includes('schema cache') && (!nomeObjeto || texto.includes(nomeObjeto.toLowerCase()));
+}
+
+function mensagemBancoDesatualizado(error) {
+  return [
+    'O banco do Supabase precisa ser atualizado antes de usar o app.',
+    `Erro recebido: ${error.message}`,
+    'Execute o arquivo supabase.sql no SQL Editor do Supabase e rode o comando NOTIFY pgrst, \'reload schema\'; no final.',
+  ].join(' ');
+}
 
 function normalizarData(data) {
   if (!data) return '';
@@ -39,16 +79,24 @@ function montarTextoLista(lista, musicas) {
   return linhas.join('\n');
 }
 
-const appShell = 'mx-auto flex min-h-screen w-full max-w-md flex-col px-4 pb-28 pt-5 sm:max-w-2xl lg:max-w-5xl';
-const panel = 'rounded-2xl border border-white/15 bg-white/10 p-4 shadow-2xl shadow-black/30 backdrop-blur-xl';
-const input = 'w-full rounded-xl border border-white/15 bg-white/10 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-300 focus:border-teal-300 focus:bg-white/15';
-const iconButton = 'inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-white/10 text-white hover:bg-white/20';
-
 export default function App() {
+  const [session, setSession] = useState(null);
+  const [perfil, setPerfil] = useState(null);
+  const [email, setEmail] = useState('');
+  const [senha, setSenha] = useState('');
+  const [confirmarSenha, setConfirmarSenha] = useState('');
+  const [authLoading, setAuthLoading] = useState(true);
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [authFeedback, setAuthFeedback] = useState({ tipo: '', texto: '' });
+  const [emailNaoConfirmado, setEmailNaoConfirmado] = useState(false);
+  const [databaseError, setDatabaseError] = useState('');
+  const [modoAuth, setModoAuth] = useState('login'); // 'login' ou 'cadastro'
+
   const [musicas, setMusicas] = useState([]);
+  const [pendentes, setPendentes] = useState([]);
+  const [sugestoes, setSugestoes] = useState([]);
+  const [sugestaoAberta, setSugestaoAberta] = useState(null);
   const [selecionadas, setSelecionadas] = useState([]);
-  const [listasSalvas, setListasSalvas] = useState([]);
-  const [listaAberta, setListaAberta] = useState(null);
   const [form, setForm] = useState(vazio);
   const [editando, setEditando] = useState(null);
   const [busca, setBusca] = useState('');
@@ -56,107 +104,367 @@ export default function App() {
   const [dataLista, setDataLista] = useState(new Date().toISOString().slice(0, 10));
   const [observacao, setObservacao] = useState('');
   const [mensagem, setMensagem] = useState('');
-  const [carregando, setCarregando] = useState(false);
-  const [carregandoListas, setCarregandoListas] = useState(false);
   const [tela, setTela] = useState('playlist');
-  const [installPrompt, setInstallPrompt] = useState(null);
-  const [instalado, setInstalado] = useState(false);
 
-  async function carregarMusicas() {
-    setCarregando(true);
+  // Estados para gerenciamento de usuários
+  const [usuarios, setUsuarios] = useState([]);
+  const [formUsuario, setFormUsuario] = useState({ email: '', senha: '', role: 'moderador' });
+  const [editandoUsuario, setEditandoUsuario] = useState(null);
+  const [carregandoUsuarios, setCarregandoUsuarios] = useState(false);
+
+  const isAdmin = perfil?.role === 'admin';
+
+  useEffect(() => {
+    if (supabaseConfigError) {
+      setAuthLoading(false);
+      return;
+    }
+
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setAuthLoading(false);
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, novaSession) => {
+      setSession(novaSession);
+    });
+
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!session?.user) {
+      setPerfil(null);
+      return;
+    }
+
+    carregarPerfil();
+  }, [session?.user?.id]);
+
+  useEffect(() => {
+    if (!perfil) return;
+    carregarMusicas();
+    carregarSugestoes();
+  }, [perfil?.role]);
+
+  const filtradas = useMemo(() => {
+    const q = normalizarTexto(busca);
+    return musicas.filter((m) =>
+      normalizarTexto([m.titulo, m.artista, m.categoria].join(' ')).includes(q)
+    );
+  }, [musicas, busca]);
+
+  async function carregarPerfil() {
+    const user = session.user;
     const { data, error } = await supabase
-      .from('musicas')
+      .from('profiles')
       .select('*')
-      .order('titulo', { ascending: true });
+      .eq('id', user.id)
+      .maybeSingle();
 
-    if (error) alert(error.message);
-    setMusicas(data || []);
-    setCarregando(false);
+    if (error) {
+      if (erroSchemaCache(error, 'profiles')) {
+        setDatabaseError(mensagemBancoDesatualizado(error));
+        return;
+      }
+
+      return alert(error.message);
+    }
+
+    if (data) {
+      setPerfil(data);
+      return;
+    }
+
+    const novoPerfil = { id: user.id, email: user.email, role: 'moderador' };
+    const { data: criado, error: erroCriar } = await supabase
+      .from('profiles')
+      .insert(novoPerfil)
+      .select()
+      .single();
+
+    if (erroCriar) {
+      if (erroSchemaCache(erroCriar, 'profiles')) {
+        setDatabaseError(mensagemBancoDesatualizado(erroCriar));
+        return;
+      }
+
+      return alert(erroCriar.message);
+    }
+
+    setPerfil(criado);
   }
 
-  async function carregarListasSalvas() {
-    setCarregandoListas(true);
+  async function entrar(e) {
+    e.preventDefault();
+    const emailLogin = email.trim();
 
-    const { data: listas, error } = await supabase
-      .from('listas_whatsapp')
+    if (!emailLogin || !senha) {
+      setEmailNaoConfirmado(false);
+      setAuthFeedback({ tipo: 'erro', texto: 'Informe e-mail e senha para entrar.' });
+      return;
+    }
+
+    setLoginLoading(true);
+    setEmailNaoConfirmado(false);
+    setAuthFeedback({ tipo: '', texto: '' });
+
+    const { error } = await supabase.auth.signInWithPassword({ email: emailLogin, password: senha });
+
+    if (error && erroEmailNaoConfirmado(error)) {
+      await reenviarConfirmacao(emailLogin);
+      return;
+    }
+
+    setLoginLoading(false);
+    if (error) {
+      setAuthFeedback({ tipo: 'erro', texto: mensagemLogin(error) });
+    }
+  }
+
+  async function cadastrar(e) {
+    e.preventDefault();
+    const emailCadastro = email.trim();
+
+    if (!emailCadastro || !senha) {
+      setAuthFeedback({ tipo: 'erro', texto: 'Informe e-mail e senha para cadastrar.' });
+      return;
+    }
+
+    if (senha !== confirmarSenha) {
+      setAuthFeedback({ tipo: 'erro', texto: 'As senhas não conferem.' });
+      return;
+    }
+
+    if (senha.length < 6) {
+      setAuthFeedback({ tipo: 'erro', texto: 'A senha deve ter pelo menos 6 caracteres.' });
+      return;
+    }
+
+    setLoginLoading(true);
+    setAuthFeedback({ tipo: '', texto: '' });
+
+    const { error } = await supabase.auth.signUp({
+      email: emailCadastro,
+      password: senha,
+    });
+
+    setLoginLoading(false);
+
+    if (error) {
+      if (erroEmailNaoConfirmado(error)) {
+        setEmailNaoConfirmado(true);
+        setAuthFeedback({
+          tipo: 'aviso',
+          texto: 'Conta criada! Verifique seu e-mail para confirmar e depois entre.',
+        });
+      } else {
+        setAuthFeedback({ tipo: 'erro', texto: mensagemLogin(error) });
+      }
+    } else {
+      setAuthFeedback({
+        tipo: 'sucesso',
+        texto: 'Conta criada com sucesso! Verifique seu e-mail para confirmar.',
+      });
+    }
+  }
+
+  async function reenviarConfirmacao(emailDestino = email) {
+    const emailConfirmacao = emailDestino.trim();
+    if (!emailConfirmacao) {
+      setAuthFeedback({ tipo: 'erro', texto: 'Informe o e-mail para reenviar a confirmacao.' });
+      return;
+    }
+
+    setLoginLoading(true);
+    const { error } = await supabase.auth.resend({
+      type: 'signup',
+      email: emailConfirmacao,
+    });
+    setLoginLoading(false);
+    setEmailNaoConfirmado(true);
+
+    if (error) {
+      setAuthFeedback({
+        tipo: 'erro',
+        texto: `Este e-mail ainda nao foi confirmado. Nao consegui reenviar automaticamente: ${error.message}. Se precisar liberar agora, confirme o usuario no painel do Supabase.`,
+      });
+      return;
+    }
+
+    setAuthFeedback({
+      tipo: 'aviso',
+      texto: 'Este e-mail ainda nao foi confirmado. Enviei um novo link de confirmacao; confirme no e-mail e tente entrar novamente. Se o link nao chegar, confirme o usuario no painel do Supabase.',
+    });
+  }
+
+  async function sair() {
+    await supabase.auth.signOut();
+    setSession(null);
+    setPerfil(null);
+    setDatabaseError('');
+  }
+
+  async function carregarMusicas() {
+    const query = supabase.from('musicas').select('*').order('titulo', { ascending: true });
+    const { data, error } = isAdmin
+      ? await query
+      : await query.eq('status', 'aprovada');
+
+    if (error) {
+      if (erroSchemaCache(error)) {
+        setDatabaseError(mensagemBancoDesatualizado(error));
+        return;
+      }
+
+      return alert(error.message);
+    }
+
+    setMusicas(data || []);
+
+    if (isAdmin) {
+      const { data: aguardando, error: erroPendentes } = await supabase
+        .from('musicas')
+        .select('*')
+        .eq('status', 'pendente')
+        .order('created_at', { ascending: false });
+      if (erroPendentes) {
+        if (erroSchemaCache(erroPendentes)) {
+          setDatabaseError(mensagemBancoDesatualizado(erroPendentes));
+          return;
+        }
+
+        return alert(erroPendentes.message);
+      }
+
+      setPendentes(aguardando || []);
+    } else {
+      setPendentes([]);
+    }
+  }
+
+  async function carregarSugestoes() {
+    const query = supabase
+      .from('sugestoes_playlists')
       .select('*')
       .order('created_at', { ascending: false });
 
+    const { data: listas, error } = isAdmin ? await query : await query.eq('created_by', session.user.id);
     if (error) {
-      setCarregandoListas(false);
+      if (erroSchemaCache(error)) {
+        setDatabaseError(mensagemBancoDesatualizado(error));
+        return;
+      }
+
       return alert(error.message);
     }
 
     const ids = (listas || []).map((lista) => lista.id);
     if (ids.length === 0) {
-      setListasSalvas([]);
-      setListaAberta(null);
-      setCarregandoListas(false);
+      setSugestoes([]);
+      setSugestaoAberta(null);
       return;
     }
 
     const { data: itens, error: erroItens } = await supabase
-      .from('lista_whatsapp_musicas')
-      .select('lista_id, ordem, musicas(id, titulo, artista, categoria, link, duracao)')
-      .in('lista_id', ids)
+      .from('sugestao_playlist_musicas')
+      .select('sugestao_id, ordem, musicas(id, titulo, artista, categoria, link, duracao)')
+      .in('sugestao_id', ids)
       .order('ordem', { ascending: true });
 
     if (erroItens) {
-      setCarregandoListas(false);
+      if (erroSchemaCache(erroItens)) {
+        setDatabaseError(mensagemBancoDesatualizado(erroItens));
+        return;
+      }
+
       return alert(erroItens.message);
     }
 
-    const listasComMusicas = (listas || []).map((lista) => ({
+    const completas = (listas || []).map((lista) => ({
       ...lista,
       musicas: (itens || [])
-        .filter((item) => item.lista_id === lista.id)
+        .filter((item) => item.sugestao_id === lista.id)
         .sort((a, b) => a.ordem - b.ordem)
         .map((item) => item.musicas)
         .filter(Boolean),
     }));
 
-    setListasSalvas(listasComMusicas);
-    setListaAberta((atual) => listasComMusicas.find((lista) => lista.id === atual?.id) || null);
-    setCarregandoListas(false);
+    setSugestoes(completas);
+    setSugestaoAberta((atual) => completas.find((item) => item.id === atual?.id) || null);
   }
 
-  useEffect(() => {
-    if (!supabaseConfigError) {
-      carregarMusicas();
-      carregarListasSalvas();
-    }
-  }, []);
+  async function carregarUsuarios() {
+    setCarregandoUsuarios(true);
+    const { data: perfis, error } = await supabase
+      .from('profiles')
+      .select('*, id')
+      .order('created_at', { ascending: false });
 
-  useEffect(() => {
-    const standalone =
-      window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
-    setInstalado(standalone);
-
-    function capturarPrompt(event) {
-      event.preventDefault();
-      setInstallPrompt(event);
-    }
-
-    function marcarInstalado() {
-      setInstalado(true);
-      setInstallPrompt(null);
+    if (error) {
+      if (erroSchemaCache(error)) {
+        setDatabaseError(mensagemBancoDesatualizado(error));
+      } else {
+        alert(error.message);
+      }
+      setCarregandoUsuarios(false);
+      return;
     }
 
-    window.addEventListener('beforeinstallprompt', capturarPrompt);
-    window.addEventListener('appinstalled', marcarInstalado);
+    setUsuarios(perfis || []);
+    setCarregandoUsuarios(false);
+  }
 
-    return () => {
-      window.removeEventListener('beforeinstallprompt', capturarPrompt);
-      window.removeEventListener('appinstalled', marcarInstalado);
-    };
-  }, []);
+  async function salvarUsuario(e) {
+    e.preventDefault();
 
-  const filtradas = useMemo(() => {
-    const q = busca.toLowerCase();
-    return musicas.filter((m) =>
-      [m.titulo, m.artista, m.categoria].join(' ').toLowerCase().includes(q)
-    );
-  }, [musicas, busca]);
+    if (editandoUsuario) {
+      // Atualizar perfil
+      const { error: erroPerfil } = await supabase
+        .from('profiles')
+        .update({ role: formUsuario.role, updated_at: new Date().toISOString() })
+        .eq('id', editandoUsuario.id);
+
+      if (erroPerfil) {
+        alert(erroPerfil.message);
+        return;
+      } else {
+        alert('Usuário atualizado com sucesso!');
+      }
+    } else {
+      alert('Para criar novos usuários, use o painel do Supabase (Authentication → Users). Depois você pode gerenciar os papéis aqui.');
+    }
+
+    setFormUsuario({ email: '', senha: '', role: 'moderador' });
+    setEditandoUsuario(null);
+    await carregarUsuarios();
+  }
+
+  function editarUsuario(usuario) {
+    setEditandoUsuario(usuario);
+    setFormUsuario({
+      email: usuario.email || '',
+      senha: '',
+      role: usuario.role || 'moderador',
+    });
+  }
+
+  async function excluirUsuario(usuario) {
+    if (!confirm(`Tem certeza que deseja excluir o usuário ${usuario.email}?`)) return;
+
+    try {
+      // Excluir usuário via Auth API (precisa de service_role, mas vamos tentar)
+      // Observação: No cliente, não podemos excluir usuários diretamente via API Auth admin sem service role.
+      // Por enquanto, vamos apenas desativar/remover o perfil.
+      const { error } = await supabase.from('profiles').delete().eq('id', usuario.id);
+
+      if (error) throw error;
+      alert('Usuário removido com sucesso!');
+      await carregarUsuarios();
+    } catch (error) {
+      alert(`Erro: ${error.message}`);
+    }
+  }
 
   function marcarMusica(musica) {
     const existe = selecionadas.find((m) => m.id === musica.id);
@@ -177,7 +485,6 @@ export default function App() {
       setEditando(null);
       setForm(vazio);
     }
-
     setTela('form');
   }
 
@@ -191,71 +498,87 @@ export default function App() {
       categoria: form.categoria?.trim() || null,
       link: form.link?.trim() || null,
       duracao: form.duracao?.trim() || null,
+      status: isAdmin ? 'aprovada' : 'pendente',
+      suggested_by: session.user.id,
       updated_at: new Date().toISOString(),
     };
 
-    const req = editando
+    const req = editando && isAdmin
       ? supabase.from('musicas').update(payload).eq('id', editando)
       : supabase.from('musicas').insert(payload);
 
     const { error } = await req;
     if (error) return alert(error.message);
 
+    alert(isAdmin ? 'Música salva.' : 'Música enviada para aprovação do administrador.');
     setForm(vazio);
     setEditando(null);
     await carregarMusicas();
-    setTela('musicas');
+    setTela(isAdmin ? 'musicas' : 'playlist');
+  }
+
+  async function aprovarMusica(id, aprovado) {
+    const payload = aprovado
+      ? { status: 'aprovada', approved_by: session.user.id, approved_at: new Date().toISOString() }
+      : { status: 'recusada', approved_by: session.user.id, approved_at: new Date().toISOString() };
+
+    const { error } = await supabase.from('musicas').update(payload).eq('id', id);
+    if (error) return alert(error.message);
+    await carregarMusicas();
   }
 
   async function excluirMusica(id) {
+    if (!isAdmin) return;
     if (!confirm('Deseja excluir esta música?')) return;
     const { error } = await supabase.from('musicas').delete().eq('id', id);
     if (error) return alert(error.message);
-    setSelecionadas(selecionadas.filter((m) => m.id !== id));
     carregarMusicas();
-    carregarListasSalvas();
   }
 
   function montarTexto() {
-    return montarTextoLista(
-      { titulo: tituloLista, data_lista: dataLista, observacao },
-      selecionadas
-    );
+    return montarTextoLista({ titulo: tituloLista, data_lista: dataLista, observacao }, selecionadas);
   }
 
-  async function salvarLista() {
+  async function enviarSugestao() {
     if (!tituloLista.trim()) return alert('Informe o título da lista.');
     if (selecionadas.length === 0) return alert('Selecione pelo menos uma música.');
 
-    const { data: lista, error } = await supabase
-      .from('listas_whatsapp')
-      .insert({ titulo: tituloLista, data_lista: dataLista, observacao })
+    const { data: sugestao, error } = await supabase
+      .from('sugestoes_playlists')
+      .insert({
+        titulo: tituloLista,
+        data_lista: dataLista,
+        observacao,
+        status: isAdmin ? 'aprovada' : 'pendente',
+        created_by: session.user.id,
+      })
       .select()
       .single();
 
     if (error) return alert(error.message);
 
     const itens = selecionadas.map((m, index) => ({
-      lista_id: lista.id,
+      sugestao_id: sugestao.id,
       musica_id: m.id,
       ordem: index + 1,
     }));
 
-    const { error: erroItens } = await supabase.from('lista_whatsapp_musicas').insert(itens);
+    const { error: erroItens } = await supabase.from('sugestao_playlist_musicas').insert(itens);
     if (erroItens) return alert(erroItens.message);
 
-    alert('Play list salva com sucesso.');
-    await carregarListasSalvas();
-    setTela('salvas');
-    setListaAberta({ ...lista, musicas: selecionadas });
+    alert(isAdmin ? 'Play list salva.' : 'Sugestão enviada ao administrador.');
+    setSelecionadas([]);
+    await carregarSugestoes();
+    setTela('sugestoes');
   }
 
-  async function excluirListaSalva(id) {
-    if (!confirm('Deseja excluir esta play list salva?')) return;
-    const { error } = await supabase.from('listas_whatsapp').delete().eq('id', id);
+  async function decidirSugestao(id, status) {
+    const { error } = await supabase
+      .from('sugestoes_playlists')
+      .update({ status, decided_by: session.user.id, decided_at: new Date().toISOString() })
+      .eq('id', id);
     if (error) return alert(error.message);
-    if (listaAberta?.id === id) setListaAberta(null);
-    carregarListasSalvas();
+    await carregarSugestoes();
   }
 
   async function copiarTexto(texto = montarTexto()) {
@@ -264,7 +587,7 @@ export default function App() {
       await navigator.clipboard.writeText(texto);
       alert('Texto copiado.');
     } catch {
-      alert('Não foi possível copiar automaticamente. O texto ficou disponível na prévia.');
+      alert('Não foi possível copiar automaticamente.');
     }
   }
 
@@ -272,15 +595,18 @@ export default function App() {
     window.open(`https://wa.me/?text=${encodeURIComponent(texto)}`, '_blank');
   }
 
-  async function instalarApp() {
-    if (!installPrompt) return;
-    installPrompt.prompt();
-    await installPrompt.userChoice;
-    setInstallPrompt(null);
-  }
+  async function tentarNovamenteBanco() {
+    setDatabaseError('');
 
-  function abrirListaSalva(lista) {
-    setListaAberta(lista);
+    if (session?.user && !perfil) {
+      await carregarPerfil();
+      return;
+    }
+
+    if (perfil) {
+      await carregarMusicas();
+      await carregarSugestoes();
+    }
   }
 
   if (supabaseConfigError) {
@@ -289,156 +615,194 @@ export default function App() {
         <section className={`${panel} mt-24`}>
           <h1 className="text-2xl font-black">Configuração do Supabase</h1>
           <p className="mt-3 text-sm text-slate-200">{supabaseConfigError}</p>
-          <p className="mt-2 text-sm text-slate-300">
-            Confira o arquivo <strong>.env</strong> ou as variáveis do deploy e reinicie o servidor.
-          </p>
         </section>
       </div>
     );
   }
 
+  if (authLoading) {
+    return <div className={appShell}><section className={`${panel} mt-24`}>Carregando...</section></div>;
+  }
+
+  if (databaseError) {
+    return (
+      <div className={appShell}>
+        <section className={`${panel} mt-20`}>
+          <div className="mb-6 flex items-center gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-300 text-slate-950">
+              <Shield className="h-6 w-6" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-black">Atualizar banco</h1>
+              <p className="text-sm text-slate-300">O schema do Supabase ainda nao esta pronto.</p>
+            </div>
+          </div>
+          <p className="rounded-xl border border-amber-200/30 bg-amber-300/10 px-4 py-3 text-sm text-amber-50">
+            {databaseError}
+          </p>
+          <div className="mt-4 grid gap-2 sm:grid-cols-2">
+            <button className="min-h-12 rounded-xl bg-teal-300 font-black text-slate-950" onClick={tentarNovamenteBanco}>
+              Tentar novamente
+            </button>
+            <button className="min-h-12 rounded-xl border border-white/15 bg-white/10 font-bold text-white" onClick={sair}>
+              Sair
+            </button>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  if (!session || !perfil) {
+    return (
+      <div className={appShell}>
+        <section className={`${panel} mt-20`}>
+          <div className="mb-6 flex items-center gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-teal-300 text-slate-950">
+              <Shield className="h-6 w-6" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-black">{modoAuth === 'login' ? 'Login' : 'Cadastre-se'}</h1>
+              <p className="text-sm text-slate-300">
+                {modoAuth === 'login' ? 'Entre como admin ou moderador.' : 'Crie sua conta para usar o app.'}
+              </p>
+            </div>
+          </div>
+
+          {/* Abas para alternar entre login e cadastro */}
+          <div className="mb-4 grid grid-cols-2 gap-2 rounded-xl border border-white/10 bg-white/5 p-1">
+            <button
+              className={`rounded-lg px-3 py-2 text-sm font-bold ${modoAuth === 'login' ? 'bg-teal-300 text-slate-950' : 'text-white hover:bg-white/10'}`}
+              onClick={() => {
+                setModoAuth('login');
+                setAuthFeedback({ tipo: '', texto: '' });
+                setConfirmarSenha('');
+              }}
+            >
+              Login
+            </button>
+            <button
+              className={`rounded-lg px-3 py-2 text-sm font-bold ${modoAuth === 'cadastro' ? 'bg-teal-300 text-slate-950' : 'text-white hover:bg-white/10'}`}
+              onClick={() => {
+                setModoAuth('cadastro');
+                setAuthFeedback({ tipo: '', texto: '' });
+              }}
+            >
+              Cadastre-se
+            </button>
+          </div>
+
+          <form className="grid gap-3" onSubmit={modoAuth === 'login' ? entrar : cadastrar}>
+            <input className={input} type="email" placeholder="E-mail" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <input className={input} type="password" placeholder="Senha" value={senha} onChange={(e) => setSenha(e.target.value)} />
+
+            {modoAuth === 'cadastro' && (
+              <input
+                className={input}
+                type="password"
+                placeholder="Confirmar senha"
+                value={confirmarSenha}
+                onChange={(e) => setConfirmarSenha(e.target.value)}
+              />
+            )}
+
+            {authFeedback.texto && (
+              <div
+                className={`rounded-xl border px-4 py-3 text-sm ${
+                  authFeedback.tipo === 'erro'
+                    ? 'border-red-300/30 bg-red-400/10 text-red-100'
+                    : authFeedback.tipo === 'sucesso'
+                    ? 'border-emerald-300/30 bg-emerald-400/10 text-emerald-100'
+                    : 'border-teal-200/30 bg-teal-300/10 text-teal-50'
+                }`}
+                role="status"
+              >
+                {authFeedback.texto}
+              </div>
+            )}
+
+            {emailNaoConfirmado && modoAuth === 'login' && (
+              <button
+                className="min-h-11 rounded-xl border border-white/15 bg-white/10 px-4 text-sm font-bold text-white"
+                disabled={loginLoading}
+                onClick={() => reenviarConfirmacao()}
+                type="button"
+              >
+                Reenviar confirmação
+              </button>
+            )}
+
+            <button className="min-h-12 rounded-xl bg-teal-300 font-black text-slate-950" disabled={loginLoading}>
+              {loginLoading
+                ? modoAuth === 'login'
+                  ? 'Entrando...'
+                  : 'Cadastrando...'
+                : modoAuth === 'login'
+                ? 'Entrar'
+                : 'Cadastrar'}
+            </button>
+          </form>
+        </section>
+      </div>
+    );
+  }
+
+  const sugestaoTexto = sugestaoAberta ? montarTextoLista(sugestaoAberta, sugestaoAberta.musicas) : '';
+
   return (
     <div className={appShell}>
       <header className="mb-5 flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs font-bold uppercase tracking-[0.2em] text-teal-200">Play list</p>
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-teal-200">
+            {isAdmin ? 'Administrador' : 'Moderador'}
+          </p>
           <h1 className="mt-1 flex items-center gap-2 text-3xl font-black leading-tight text-white sm:text-4xl">
             <Music className="h-8 w-8 shrink-0 text-teal-200" />
             <span>Lista de Músicas</span>
           </h1>
         </div>
-        <div className="flex shrink-0 gap-2">
-          {installPrompt && !instalado && (
-            <button className={iconButton} onClick={instalarApp} title="Instalar aplicativo">
-              <Download className="h-5 w-5" />
-            </button>
-          )}
-          <button className={iconButton} onClick={() => abrirFormulario()} title="Adicionar música">
-            <Plus className="h-5 w-5" />
-          </button>
-        </div>
+        <button className={iconButton} onClick={sair} title="Sair">
+          <LogOut className="h-5 w-5" />
+        </button>
       </header>
 
       {tela === 'playlist' && (
         <main className="grid gap-4 lg:grid-cols-2">
           <section className={panel}>
             <div className="mb-4 flex items-center justify-between gap-3">
-              <h2 className="text-xl font-black">CRIA PLAY LIST</h2>
+              <h2 className="text-xl font-black">{isAdmin ? 'CRIAR PLAY LIST' : 'SUGERIR PLAY LIST'}</h2>
               <span className="rounded-full bg-teal-300/20 px-3 py-1 text-xs font-bold text-teal-100">
                 {selecionadas.length} músicas
               </span>
             </div>
-
             <div className="grid gap-3">
               <input className={input} placeholder="Título da lista" value={tituloLista} onChange={(e) => setTituloLista(e.target.value)} />
               <input className={input} type="date" value={dataLista} onChange={(e) => setDataLista(e.target.value)} />
-              <textarea className={`${input} min-h-24 resize-none`} placeholder="Observação opcional" value={observacao} onChange={(e) => setObservacao(e.target.value)} />
+              <textarea className={`${input} min-h-20 resize-none`} placeholder="Observação opcional" value={observacao} onChange={(e) => setObservacao(e.target.value)} />
             </div>
-
             <div className="mt-4 grid grid-cols-3 gap-2">
-              <button className="inline-flex min-h-12 items-center justify-center gap-1 rounded-xl bg-teal-300 px-2 text-sm font-black text-slate-950" onClick={salvarLista}>
+              <button className="inline-flex min-h-12 items-center justify-center gap-1 rounded-xl bg-teal-300 px-2 text-sm font-black text-slate-950" onClick={enviarSugestao}>
                 <Save className="h-4 w-4" />
-                Salvar
+                {isAdmin ? 'Salvar' : 'Sugerir'}
               </button>
               <button className="inline-flex min-h-12 items-center justify-center gap-1 rounded-xl border border-white/15 bg-white/10 px-2 text-sm font-bold text-white" onClick={() => copiarTexto()}>
                 <Copy className="h-4 w-4" />
                 Copiar
               </button>
-              <button className="inline-flex min-h-12 items-center justify-center gap-1 rounded-xl bg-emerald-400 px-2 text-sm font-black text-slate-950" onClick={() => abrirWhatsApp()}>
-                <Send className="h-4 w-4" />
-                Enviar
-              </button>
+              {isAdmin && (
+                <button className="inline-flex min-h-12 items-center justify-center gap-1 rounded-xl bg-emerald-400 px-2 text-sm font-black text-slate-950" onClick={() => abrirWhatsApp()}>
+                  <Send className="h-4 w-4" />
+                  Enviar
+                </button>
+              )}
             </div>
           </section>
 
           <section className={panel}>
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-lg font-black">Prévia</h2>
-              <MessageCircle className="h-5 w-5 text-emerald-200" />
-            </div>
+            <h2 className="mb-3 text-lg font-black">Prévia</h2>
             <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-xl border border-white/10 bg-slate-950/35 p-4 text-sm leading-relaxed text-slate-100">
               {mensagem || montarTexto()}
             </pre>
-          </section>
-        </main>
-      )}
-
-      {tela === 'salvas' && (
-        <main className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
-          <section className={panel}>
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <h2 className="text-xl font-black">Play lists salvas</h2>
-                <p className="text-sm text-slate-300">
-                  {carregandoListas ? 'Carregando...' : `${listasSalvas.length} salvas`}
-                </p>
-              </div>
-              <button className={iconButton} onClick={carregarListasSalvas} title="Atualizar">
-                <Search className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="grid gap-3">
-              {listasSalvas.length === 0 && (
-                <div className="rounded-2xl border border-white/10 bg-white/10 p-4 text-sm text-slate-200">
-                  Nenhuma play list salva ainda.
-                </div>
-              )}
-
-              {listasSalvas.map((lista) => (
-                <article
-                  className={`rounded-2xl border p-3 ${listaAberta?.id === lista.id ? 'border-teal-300/70 bg-teal-300/15' : 'border-white/10 bg-white/10'}`}
-                  key={lista.id}
-                >
-                  <button className="block w-full text-left" onClick={() => abrirListaSalva(lista)}>
-                    <strong className="block truncate text-base text-white">{lista.titulo}</strong>
-                    <span className="text-sm text-slate-300">
-                      {normalizarData(lista.data_lista)} • {lista.musicas.length} músicas
-                    </span>
-                  </button>
-                  <div className="mt-3 flex gap-2">
-                    <button className="rounded-xl bg-teal-300 px-3 py-2 text-xs font-black text-slate-950" onClick={() => abrirListaSalva(lista)}>
-                      Abrir
-                    </button>
-                    <button className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-bold text-white" onClick={() => copiarTexto(montarTextoLista(lista, lista.musicas))}>
-                      Copiar
-                    </button>
-                    <button className="rounded-xl bg-emerald-400 px-3 py-2 text-xs font-black text-slate-950" onClick={() => abrirWhatsApp(montarTextoLista(lista, lista.musicas))}>
-                      Enviar
-                    </button>
-                    <button className="ml-auto rounded-xl border border-red-300/30 bg-red-400/10 px-3 py-2 text-xs font-bold text-red-100" onClick={() => excluirListaSalva(lista.id)}>
-                      Excluir
-                    </button>
-                  </div>
-                </article>
-              ))}
-            </div>
-          </section>
-
-          <section className={panel}>
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-lg font-black">{listaAberta ? listaAberta.titulo : 'Lista aberta'}</h2>
-              <FolderOpen className="h-5 w-5 text-teal-200" />
-            </div>
-            {listaAberta ? (
-              <>
-                <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-xl border border-white/10 bg-slate-950/35 p-4 text-sm leading-relaxed text-slate-100">
-                  {montarTextoLista(listaAberta, listaAberta.musicas)}
-                </pre>
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <button className="rounded-xl border border-white/15 bg-white/10 px-3 py-3 text-sm font-bold text-white" onClick={() => copiarTexto(montarTextoLista(listaAberta, listaAberta.musicas))}>
-                    Copiar
-                  </button>
-                  <button className="rounded-xl bg-emerald-400 px-3 py-3 text-sm font-black text-slate-950" onClick={() => abrirWhatsApp(montarTextoLista(listaAberta, listaAberta.musicas))}>
-                    Enviar
-                  </button>
-                </div>
-              </>
-            ) : (
-              <p className="rounded-xl border border-white/10 bg-white/10 p-4 text-sm text-slate-300">
-                Toque em uma play list salva para abrir.
-              </p>
-            )}
           </section>
         </main>
       )}
@@ -447,24 +811,22 @@ export default function App() {
         <main className={panel}>
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <h2 className="text-xl font-black">Músicas cadastradas</h2>
-              <p className="text-sm text-slate-300">{carregando ? 'Carregando...' : `${filtradas.length} encontradas`}</p>
+              <h2 className="text-xl font-black">Músicas aprovadas</h2>
+              <p className="text-sm text-slate-300">{filtradas.length} encontradas</p>
             </div>
             <button className={iconButton} onClick={() => abrirFormulario()} title="Adicionar música">
               <Plus className="h-5 w-5" />
             </button>
           </div>
-
           <label className="mb-4 flex items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-3">
             <Search className="h-5 w-5 text-slate-300" />
             <input className="w-full bg-transparent py-3 text-sm text-white outline-none placeholder:text-slate-300" placeholder="Buscar música, artista ou categoria" value={busca} onChange={(e) => setBusca(e.target.value)} />
           </label>
-
           <div className="grid gap-3">
             {filtradas.map((m) => {
               const selected = selecionadas.some((s) => s.id === m.id);
               return (
-                <article className={`rounded-2xl border p-3 transition ${selected ? 'border-teal-300/70 bg-teal-300/15' : 'border-white/10 bg-white/10'}`} key={m.id}>
+                <article className={`rounded-2xl border p-3 ${selected ? 'border-teal-300/70 bg-teal-300/15' : 'border-white/10 bg-white/10'}`} key={m.id}>
                   <div className="flex items-center gap-3">
                     <button className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl font-black ${selected ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => marcarMusica(m)}>
                       {selected ? <Check className="h-5 w-5" /> : <Plus className="h-5 w-5" />}
@@ -474,16 +836,13 @@ export default function App() {
                       <span className="block truncate text-sm text-slate-300">
                         {m.artista || 'Sem artista'} {m.categoria ? `• ${m.categoria}` : ''} {m.duracao ? `• ${m.duracao}` : ''}
                       </span>
-                      {m.link && <a className="text-sm font-bold text-teal-200" href={m.link} target="_blank">Abrir link</a>}
                     </div>
-                    <div className="flex gap-2">
-                      <button className={iconButton} onClick={() => abrirFormulario(m)} title="Editar">
-                        <Edit className="h-4 w-4" />
-                      </button>
-                      <button className={iconButton} onClick={() => excluirMusica(m.id)} title="Excluir">
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
+                    {isAdmin && (
+                      <div className="flex gap-2">
+                        <button className={iconButton} onClick={() => abrirFormulario(m)} title="Editar"><Edit className="h-4 w-4" /></button>
+                        <button className={iconButton} onClick={() => excluirMusica(m.id)} title="Excluir"><Trash2 className="h-4 w-4" /></button>
+                      </div>
+                    )}
                   </div>
                 </article>
               );
@@ -492,18 +851,78 @@ export default function App() {
         </main>
       )}
 
+      {tela === 'aprovar' && isAdmin && (
+        <main className={panel}>
+          <h2 className="mb-4 text-xl font-black">Músicas aguardando aprovação</h2>
+          <div className="grid gap-3">
+            {pendentes.length === 0 && <p className="rounded-xl bg-white/10 p-4 text-sm text-slate-300">Nenhuma música pendente.</p>}
+            {pendentes.map((m) => (
+              <article className="rounded-2xl border border-white/10 bg-white/10 p-3" key={m.id}>
+                <strong className="block text-white">{m.titulo}</strong>
+                <span className="text-sm text-slate-300">{m.artista || 'Sem artista'} {m.categoria ? `• ${m.categoria}` : ''}</span>
+                {m.link && <a className="mt-1 block text-sm font-bold text-teal-200" href={m.link} target="_blank">Abrir link</a>}
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <button className="rounded-xl bg-teal-300 px-3 py-2 text-sm font-black text-slate-950" onClick={() => aprovarMusica(m.id, true)}>Aprovar</button>
+                  <button className="rounded-xl border border-red-300/30 bg-red-400/10 px-3 py-2 text-sm font-bold text-red-100" onClick={() => aprovarMusica(m.id, false)}>Recusar</button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </main>
+      )}
+
+      {tela === 'sugestoes' && (
+        <main className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
+          <section className={panel}>
+            <h2 className="mb-4 text-xl font-black">{isAdmin ? 'Sugestões recebidas' : 'Minhas sugestões'}</h2>
+            <div className="grid gap-3">
+              {sugestoes.length === 0 && <p className="rounded-xl bg-white/10 p-4 text-sm text-slate-300">Nenhuma sugestão ainda.</p>}
+              {sugestoes.map((sugestao) => (
+                <article className={`rounded-2xl border p-3 ${sugestaoAberta?.id === sugestao.id ? 'border-teal-300/70 bg-teal-300/15' : 'border-white/10 bg-white/10'}`} key={sugestao.id}>
+                  <button className="block w-full text-left" onClick={() => setSugestaoAberta(sugestao)}>
+                    <strong className="block truncate text-base text-white">{sugestao.titulo}</strong>
+                    <span className="text-sm text-slate-300">{normalizarData(sugestao.data_lista)} • {sugestao.musicas.length} músicas • {sugestao.status}</span>
+                  </button>
+                  {isAdmin && sugestao.status === 'pendente' && (
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <button className="rounded-xl bg-teal-300 px-3 py-2 text-xs font-black text-slate-950" onClick={() => decidirSugestao(sugestao.id, 'aprovada')}>Aprovar</button>
+                      <button className="rounded-xl border border-red-300/30 bg-red-400/10 px-3 py-2 text-xs font-bold text-red-100" onClick={() => decidirSugestao(sugestao.id, 'recusada')}>Recusar</button>
+                    </div>
+                  )}
+                </article>
+              ))}
+            </div>
+          </section>
+          <section className={panel}>
+            <h2 className="mb-3 text-lg font-black">{sugestaoAberta ? sugestaoAberta.titulo : 'Sugestão aberta'}</h2>
+            {sugestaoAberta ? (
+              <>
+                <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-xl border border-white/10 bg-slate-950/35 p-4 text-sm leading-relaxed text-slate-100">{sugestaoTexto}</pre>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <button className="rounded-xl border border-white/15 bg-white/10 px-3 py-3 text-sm font-bold text-white" onClick={() => copiarTexto(sugestaoTexto)}>Copiar</button>
+                  {isAdmin && sugestaoAberta.status === 'aprovada' && (
+                    <button className="rounded-xl bg-emerald-400 px-3 py-3 text-sm font-black text-slate-950" onClick={() => abrirWhatsApp(sugestaoTexto)}>WhatsApp</button>
+                  )}
+                </div>
+              </>
+            ) : (
+              <p className="rounded-xl bg-white/10 p-4 text-sm text-slate-300">Toque em uma sugestão para abrir.</p>
+            )}
+          </section>
+        </main>
+      )}
+
       {tela === 'form' && (
         <main className={panel}>
           <div className="mb-4 flex items-center justify-between">
             <div>
-              <p className="text-xs font-bold uppercase tracking-[0.18em] text-teal-200">Segunda tela</p>
+              <p className="text-xs font-bold uppercase tracking-[0.18em] text-teal-200">
+                {isAdmin ? 'Cadastro direto' : 'Vai para aprovação'}
+              </p>
               <h2 className="text-2xl font-black">{editando ? 'Editar música' : 'Adicionar música'}</h2>
             </div>
-            <button className={iconButton} onClick={() => setTela('musicas')} title="Fechar">
-              <X className="h-5 w-5" />
-            </button>
+            <button className={iconButton} onClick={() => setTela('musicas')} title="Fechar"><X className="h-5 w-5" /></button>
           </div>
-
           <form onSubmit={salvarMusica} className="grid gap-3">
             <input className={input} placeholder="Título da música" value={form.titulo} onChange={(e) => setForm({ ...form, titulo: e.target.value })} />
             <input className={input} placeholder="Artista / ministério" value={form.artista} onChange={(e) => setForm({ ...form, artista: e.target.value })} />
@@ -512,30 +931,113 @@ export default function App() {
             <input className={input} placeholder="Duração. Ex: 5:31" value={form.duracao} onChange={(e) => setForm({ ...form, duracao: e.target.value })} />
             <button className="mt-2 inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-teal-300 px-4 font-black text-slate-950" type="submit">
               <Save className="h-5 w-5" />
-              Salvar música
+              {isAdmin ? 'Salvar música' : 'Enviar para aprovação'}
             </button>
           </form>
         </main>
       )}
 
-      <nav className="fixed inset-x-0 bottom-0 z-10 mx-auto max-w-md border-t border-white/15 bg-slate-950/80 px-3 py-3 backdrop-blur-xl sm:max-w-2xl lg:max-w-5xl">
-        <div className="grid grid-cols-4 gap-2">
-          <button className={`rounded-xl px-1 py-2 text-xs font-black ${tela === 'playlist' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => setTela('playlist')}>
-            <ListMusic className="mx-auto mb-1 h-5 w-5" />
-            Criar
-          </button>
-          <button className={`rounded-xl px-1 py-2 text-xs font-black ${tela === 'salvas' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => { setTela('salvas'); carregarListasSalvas(); }}>
-            <FolderOpen className="mx-auto mb-1 h-5 w-5" />
-            Salvas
-          </button>
-          <button className={`rounded-xl px-1 py-2 text-xs font-black ${tela === 'musicas' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => setTela('musicas')}>
-            <Music className="mx-auto mb-1 h-5 w-5" />
-            Músicas
-          </button>
-          <button className={`rounded-xl px-1 py-2 text-xs font-black ${tela === 'form' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => abrirFormulario()}>
-            <Plus className="mx-auto mb-1 h-5 w-5" />
-            Add
-          </button>
+      {tela === 'usuarios' && isAdmin && (
+        <main className="grid gap-4 lg:grid-cols-2">
+          <section className={panel}>
+            <h2 className="mb-4 text-xl font-black">Gerenciar Usuários</h2>
+            {carregandoUsuarios && <p className="text-sm text-slate-300">Carregando...</p>}
+            {!carregandoUsuarios && usuarios.length === 0 && <p className="rounded-xl bg-white/10 p-4 text-sm text-slate-300">Nenhum usuário encontrado.</p>}
+            {!carregandoUsuarios && usuarios.length > 0 && (
+              <div className="grid gap-3">
+                {usuarios.map((usuario) => (
+                  <div key={usuario.id} className="rounded-xl border border-white/15 bg-white/10 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <strong className="block truncate text-base text-white">{usuario.email}</strong>
+                        <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-bold ${usuario.role === 'admin' ? 'bg-amber-300 text-slate-950' : 'bg-teal-300 text-slate-950'}`}>
+                          {usuario.role}
+                        </span>
+                      </div>
+                      <div className="flex gap-2">
+                        <button className={iconButton} onClick={() => editarUsuario(usuario)} title="Editar papel">
+                          <Edit className="h-4 w-4" />
+                        </button>
+                        {usuario.id !== session.user.id && (
+                          <button className={iconButton} onClick={() => excluirUsuario(usuario)} title="Remover">
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className={panel}>
+            <h2 className="mb-4 text-xl font-black">{editandoUsuario ? 'Editar Usuário' : 'Dados do Usuário'}</h2>
+            <form onSubmit={salvarUsuario} className="grid gap-3">
+              <div>
+                <label className="mb-1 block text-sm font-bold text-slate-200">E-mail</label>
+                <input
+                  className={input}
+                  type="email"
+                  placeholder="email@exemplo.com"
+                  value={formUsuario.email}
+                  onChange={(e) => setFormUsuario({ ...formUsuario, email: e.target.value })}
+                  disabled={!!editandoUsuario}
+                />
+              </div>
+              {!editandoUsuario && (
+                <div>
+                  <label className="mb-1 block text-sm font-bold text-slate-200">Senha</label>
+                  <input
+                    className={input}
+                    type="password"
+                    placeholder="********"
+                    value={formUsuario.senha}
+                    onChange={(e) => setFormUsuario({ ...formUsuario, senha: e.target.value })}
+                  />
+                </div>
+              )}
+              <div>
+                <label className="mb-1 block text-sm font-bold text-slate-200">Papel</label>
+                <select
+                  className={input}
+                  value={formUsuario.role}
+                  onChange={(e) => setFormUsuario({ ...formUsuario, role: e.target.value })}
+                >
+                  <option value="moderador">Moderador</option>
+                  <option value="admin">Administrador</option>
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button className="min-h-12 rounded-xl bg-teal-300 font-black text-slate-950" type="submit">
+                  {editandoUsuario ? 'Salvar Alterações' : 'Criar Usuário'}
+                </button>
+                {(editandoUsuario || formUsuario.email || formUsuario.senha) && (
+                  <button
+                    className="min-h-12 rounded-xl border border-white/15 bg-white/10 font-bold text-white"
+                    type="button"
+                    onClick={() => {
+                      setEditandoUsuario(null);
+                      setFormUsuario({ email: '', senha: '', role: 'moderador' });
+                    }}
+                  >
+                    Limpar
+                  </button>
+                )}
+              </div>
+            </form>
+          </section>
+        </main>
+      )}
+
+      <nav className="fixed inset-x-0 bottom-0 z-10 mx-auto max-w-md border-t border-white/15 bg-slate-950/80 px-2 py-3 backdrop-blur-xl sm:max-w-2xl lg:max-w-5xl">
+        <div className={`grid gap-2 ${isAdmin ? 'grid-cols-6' : 'grid-cols-4'}`}>
+          <button className={`rounded-xl px-1 py-2 text-xs font-bold ${tela === 'playlist' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => setTela('playlist')}><ListMusic className="mx-auto mb-1 h-5 w-5" />Lista</button>
+          <button className={`rounded-xl px-1 py-2 text-xs font-bold ${tela === 'sugestoes' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => { setTela('sugestoes'); carregarSugestoes(); }}><Inbox className="mx-auto mb-1 h-5 w-5" />Sug.</button>
+          <button className={`rounded-xl px-1 py-2 text-xs font-bold ${tela === 'musicas' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => setTela('musicas')}><Music className="mx-auto mb-1 h-5 w-5" />Músicas</button>
+          {isAdmin && <button className={`rounded-xl px-1 py-2 text-xs font-bold ${tela === 'aprovar' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => setTela('aprovar')}><ListChecks className="mx-auto mb-1 h-5 w-5" />Aprovar</button>}
+          {isAdmin && <button className={`rounded-xl px-1 py-2 text-xs font-bold ${tela === 'usuarios' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => { setTela('usuarios'); carregarUsuarios(); }}><User className="mx-auto mb-1 h-5 w-5" />Usuários</button>}
+          <button className={`rounded-xl px-1 py-2 text-xs font-bold ${tela === 'form' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => abrirFormulario()}><Plus className="mx-auto mb-1 h-5 w-5" />Add</button>
         </div>
       </nav>
     </div>
