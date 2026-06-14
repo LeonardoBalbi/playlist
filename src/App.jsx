@@ -5,6 +5,7 @@ import {
   Copy,
   Download,
   Edit,
+  FolderOpen,
   ListMusic,
   MessageCircle,
   Music,
@@ -24,6 +25,20 @@ function normalizarData(data) {
   return `${dia}/${mes}/${ano}`;
 }
 
+function montarTextoLista(lista, musicas) {
+  const linhas = [];
+  linhas.push(`🎵 *${lista?.titulo || 'Lista de músicas'}*`);
+  linhas.push(`📅 Data: ${normalizarData(lista?.data_lista)}`);
+  if (lista?.observacao?.trim()) linhas.push(`📝 ${lista.observacao.trim()}`);
+  linhas.push('');
+  linhas.push('*Músicas:*');
+  musicas.forEach((m, i) => {
+    linhas.push(`${i + 1}. ${m.titulo}${m.artista ? ` - ${m.artista}` : ''}`);
+    if (m.link) linhas.push(`   ${m.link}`);
+  });
+  return linhas.join('\n');
+}
+
 const appShell = 'mx-auto flex min-h-screen w-full max-w-md flex-col px-4 pb-28 pt-5 sm:max-w-2xl lg:max-w-5xl';
 const panel = 'rounded-2xl border border-white/15 bg-white/10 p-4 shadow-2xl shadow-black/30 backdrop-blur-xl';
 const input = 'w-full rounded-xl border border-white/15 bg-white/10 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-300 focus:border-teal-300 focus:bg-white/15';
@@ -32,6 +47,8 @@ const iconButton = 'inline-flex h-11 w-11 shrink-0 items-center justify-center r
 export default function App() {
   const [musicas, setMusicas] = useState([]);
   const [selecionadas, setSelecionadas] = useState([]);
+  const [listasSalvas, setListasSalvas] = useState([]);
+  const [listaAberta, setListaAberta] = useState(null);
   const [form, setForm] = useState(vazio);
   const [editando, setEditando] = useState(null);
   const [busca, setBusca] = useState('');
@@ -40,6 +57,7 @@ export default function App() {
   const [observacao, setObservacao] = useState('');
   const [mensagem, setMensagem] = useState('');
   const [carregando, setCarregando] = useState(false);
+  const [carregandoListas, setCarregandoListas] = useState(false);
   const [tela, setTela] = useState('playlist');
   const [installPrompt, setInstallPrompt] = useState(null);
   const [instalado, setInstalado] = useState(false);
@@ -56,8 +74,57 @@ export default function App() {
     setCarregando(false);
   }
 
+  async function carregarListasSalvas() {
+    setCarregandoListas(true);
+
+    const { data: listas, error } = await supabase
+      .from('listas_whatsapp')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      setCarregandoListas(false);
+      return alert(error.message);
+    }
+
+    const ids = (listas || []).map((lista) => lista.id);
+    if (ids.length === 0) {
+      setListasSalvas([]);
+      setListaAberta(null);
+      setCarregandoListas(false);
+      return;
+    }
+
+    const { data: itens, error: erroItens } = await supabase
+      .from('lista_whatsapp_musicas')
+      .select('lista_id, ordem, musicas(id, titulo, artista, categoria, link, duracao)')
+      .in('lista_id', ids)
+      .order('ordem', { ascending: true });
+
+    if (erroItens) {
+      setCarregandoListas(false);
+      return alert(erroItens.message);
+    }
+
+    const listasComMusicas = (listas || []).map((lista) => ({
+      ...lista,
+      musicas: (itens || [])
+        .filter((item) => item.lista_id === lista.id)
+        .sort((a, b) => a.ordem - b.ordem)
+        .map((item) => item.musicas)
+        .filter(Boolean),
+    }));
+
+    setListasSalvas(listasComMusicas);
+    setListaAberta((atual) => listasComMusicas.find((lista) => lista.id === atual?.id) || null);
+    setCarregandoListas(false);
+  }
+
   useEffect(() => {
-    if (!supabaseConfigError) carregarMusicas();
+    if (!supabaseConfigError) {
+      carregarMusicas();
+      carregarListasSalvas();
+    }
   }, []);
 
   useEffect(() => {
@@ -146,20 +213,14 @@ export default function App() {
     if (error) return alert(error.message);
     setSelecionadas(selecionadas.filter((m) => m.id !== id));
     carregarMusicas();
+    carregarListasSalvas();
   }
 
   function montarTexto() {
-    const linhas = [];
-    linhas.push(`🎵 *${tituloLista || 'Lista de músicas'}*`);
-    linhas.push(`📅 Data: ${normalizarData(dataLista)}`);
-    if (observacao.trim()) linhas.push(`📝 ${observacao.trim()}`);
-    linhas.push('');
-    linhas.push('*Músicas:*');
-    selecionadas.forEach((m, i) => {
-      linhas.push(`${i + 1}. ${m.titulo}${m.artista ? ` - ${m.artista}` : ''}`);
-      if (m.link) linhas.push(`   ${m.link}`);
-    });
-    return linhas.join('\n');
+    return montarTextoLista(
+      { titulo: tituloLista, data_lista: dataLista, observacao },
+      selecionadas
+    );
   }
 
   async function salvarLista() {
@@ -184,10 +245,20 @@ export default function App() {
     if (erroItens) return alert(erroItens.message);
 
     alert('Play list salva com sucesso.');
+    await carregarListasSalvas();
+    setTela('salvas');
+    setListaAberta({ ...lista, musicas: selecionadas });
   }
 
-  async function copiarTexto() {
-    const texto = montarTexto();
+  async function excluirListaSalva(id) {
+    if (!confirm('Deseja excluir esta play list salva?')) return;
+    const { error } = await supabase.from('listas_whatsapp').delete().eq('id', id);
+    if (error) return alert(error.message);
+    if (listaAberta?.id === id) setListaAberta(null);
+    carregarListasSalvas();
+  }
+
+  async function copiarTexto(texto = montarTexto()) {
     setMensagem(texto);
     try {
       await navigator.clipboard.writeText(texto);
@@ -197,8 +268,8 @@ export default function App() {
     }
   }
 
-  function abrirWhatsApp() {
-    window.open(`https://wa.me/?text=${encodeURIComponent(montarTexto())}`, '_blank');
+  function abrirWhatsApp(texto = montarTexto()) {
+    window.open(`https://wa.me/?text=${encodeURIComponent(texto)}`, '_blank');
   }
 
   async function instalarApp() {
@@ -206,6 +277,10 @@ export default function App() {
     installPrompt.prompt();
     await installPrompt.userChoice;
     setInstallPrompt(null);
+  }
+
+  function abrirListaSalva(lista) {
+    setListaAberta(lista);
   }
 
   if (supabaseConfigError) {
@@ -265,11 +340,11 @@ export default function App() {
                 <Save className="h-4 w-4" />
                 Salvar
               </button>
-              <button className="inline-flex min-h-12 items-center justify-center gap-1 rounded-xl border border-white/15 bg-white/10 px-2 text-sm font-bold text-white" onClick={copiarTexto}>
+              <button className="inline-flex min-h-12 items-center justify-center gap-1 rounded-xl border border-white/15 bg-white/10 px-2 text-sm font-bold text-white" onClick={() => copiarTexto()}>
                 <Copy className="h-4 w-4" />
                 Copiar
               </button>
-              <button className="inline-flex min-h-12 items-center justify-center gap-1 rounded-xl bg-emerald-400 px-2 text-sm font-black text-slate-950" onClick={abrirWhatsApp}>
+              <button className="inline-flex min-h-12 items-center justify-center gap-1 rounded-xl bg-emerald-400 px-2 text-sm font-black text-slate-950" onClick={() => abrirWhatsApp()}>
                 <Send className="h-4 w-4" />
                 Enviar
               </button>
@@ -284,6 +359,86 @@ export default function App() {
             <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-xl border border-white/10 bg-slate-950/35 p-4 text-sm leading-relaxed text-slate-100">
               {mensagem || montarTexto()}
             </pre>
+          </section>
+        </main>
+      )}
+
+      {tela === 'salvas' && (
+        <main className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
+          <section className={panel}>
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-black">Play lists salvas</h2>
+                <p className="text-sm text-slate-300">
+                  {carregandoListas ? 'Carregando...' : `${listasSalvas.length} salvas`}
+                </p>
+              </div>
+              <button className={iconButton} onClick={carregarListasSalvas} title="Atualizar">
+                <Search className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="grid gap-3">
+              {listasSalvas.length === 0 && (
+                <div className="rounded-2xl border border-white/10 bg-white/10 p-4 text-sm text-slate-200">
+                  Nenhuma play list salva ainda.
+                </div>
+              )}
+
+              {listasSalvas.map((lista) => (
+                <article
+                  className={`rounded-2xl border p-3 ${listaAberta?.id === lista.id ? 'border-teal-300/70 bg-teal-300/15' : 'border-white/10 bg-white/10'}`}
+                  key={lista.id}
+                >
+                  <button className="block w-full text-left" onClick={() => abrirListaSalva(lista)}>
+                    <strong className="block truncate text-base text-white">{lista.titulo}</strong>
+                    <span className="text-sm text-slate-300">
+                      {normalizarData(lista.data_lista)} • {lista.musicas.length} músicas
+                    </span>
+                  </button>
+                  <div className="mt-3 flex gap-2">
+                    <button className="rounded-xl bg-teal-300 px-3 py-2 text-xs font-black text-slate-950" onClick={() => abrirListaSalva(lista)}>
+                      Abrir
+                    </button>
+                    <button className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-bold text-white" onClick={() => copiarTexto(montarTextoLista(lista, lista.musicas))}>
+                      Copiar
+                    </button>
+                    <button className="rounded-xl bg-emerald-400 px-3 py-2 text-xs font-black text-slate-950" onClick={() => abrirWhatsApp(montarTextoLista(lista, lista.musicas))}>
+                      Enviar
+                    </button>
+                    <button className="ml-auto rounded-xl border border-red-300/30 bg-red-400/10 px-3 py-2 text-xs font-bold text-red-100" onClick={() => excluirListaSalva(lista.id)}>
+                      Excluir
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+
+          <section className={panel}>
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-lg font-black">{listaAberta ? listaAberta.titulo : 'Lista aberta'}</h2>
+              <FolderOpen className="h-5 w-5 text-teal-200" />
+            </div>
+            {listaAberta ? (
+              <>
+                <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-xl border border-white/10 bg-slate-950/35 p-4 text-sm leading-relaxed text-slate-100">
+                  {montarTextoLista(listaAberta, listaAberta.musicas)}
+                </pre>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <button className="rounded-xl border border-white/15 bg-white/10 px-3 py-3 text-sm font-bold text-white" onClick={() => copiarTexto(montarTextoLista(listaAberta, listaAberta.musicas))}>
+                    Copiar
+                  </button>
+                  <button className="rounded-xl bg-emerald-400 px-3 py-3 text-sm font-black text-slate-950" onClick={() => abrirWhatsApp(montarTextoLista(listaAberta, listaAberta.musicas))}>
+                    Enviar
+                  </button>
+                </div>
+              </>
+            ) : (
+              <p className="rounded-xl border border-white/10 bg-white/10 p-4 text-sm text-slate-300">
+                Toque em uma play list salva para abrir.
+              </p>
+            )}
           </section>
         </main>
       )}
@@ -363,19 +518,23 @@ export default function App() {
         </main>
       )}
 
-      <nav className="fixed inset-x-0 bottom-0 z-10 mx-auto max-w-md border-t border-white/15 bg-slate-950/80 px-4 py-3 backdrop-blur-xl sm:max-w-2xl lg:max-w-5xl">
-        <div className="grid grid-cols-3 gap-2">
-          <button className={`rounded-xl px-2 py-2 text-xs font-black ${tela === 'playlist' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => setTela('playlist')}>
+      <nav className="fixed inset-x-0 bottom-0 z-10 mx-auto max-w-md border-t border-white/15 bg-slate-950/80 px-3 py-3 backdrop-blur-xl sm:max-w-2xl lg:max-w-5xl">
+        <div className="grid grid-cols-4 gap-2">
+          <button className={`rounded-xl px-1 py-2 text-xs font-black ${tela === 'playlist' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => setTela('playlist')}>
             <ListMusic className="mx-auto mb-1 h-5 w-5" />
-            Play list
+            Criar
           </button>
-          <button className={`rounded-xl px-2 py-2 text-xs font-black ${tela === 'musicas' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => setTela('musicas')}>
+          <button className={`rounded-xl px-1 py-2 text-xs font-black ${tela === 'salvas' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => { setTela('salvas'); carregarListasSalvas(); }}>
+            <FolderOpen className="mx-auto mb-1 h-5 w-5" />
+            Salvas
+          </button>
+          <button className={`rounded-xl px-1 py-2 text-xs font-black ${tela === 'musicas' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => setTela('musicas')}>
             <Music className="mx-auto mb-1 h-5 w-5" />
             Músicas
           </button>
-          <button className={`rounded-xl px-2 py-2 text-xs font-black ${tela === 'form' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => abrirFormulario()}>
+          <button className={`rounded-xl px-1 py-2 text-xs font-black ${tela === 'form' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => abrirFormulario()}>
             <Plus className="mx-auto mb-1 h-5 w-5" />
-            Adicionar
+            Add
           </button>
         </div>
       </nav>
