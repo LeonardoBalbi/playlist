@@ -20,7 +20,24 @@ import {
   Trash2,
   User,
   X,
+  BarChart3,
+  Calendar,
+  Music2,
+  MessageSquare,
+  CheckCircle2,
+  Clock,
+  Filter,
 } from 'lucide-react';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+} from 'recharts';
 
 const vazio = { titulo: '', artista: '', categoria: '', link: '', duracao: '' };
 const appShell = 'mx-auto flex min-h-screen w-full max-w-md flex-col px-4 pb-28 pt-5 sm:max-w-2xl lg:max-w-5xl';
@@ -111,6 +128,24 @@ export default function App() {
   const [editando, setEditando] = useState(null);
   const [busca, setBusca] = useState('');
   const [previewMusica, setPreviewMusica] = useState(null);
+  
+  // Estados para métricas
+  const [metricas, setMetricas] = useState({
+    totalMusicas: 0,
+    totalPlaylists: 0,
+    totalSugestoes: 0,
+    totalAprovadas: 0,
+    totalPendentes: 0,
+  });
+  const [musicasMaisSelecionadas, setMusicasMaisSelecionadas] = useState([]);
+  const [playlistsPorMes, setPlaylistsPorMes] = useState([]);
+  const [sugestoesPorMes, setSugestoesPorMes] = useState([]);
+  const [filtroPeriodo, setFiltroPeriodo] = useState('todos'); // todos, mes, ano, personalizado
+  const [mesSelecionado, setMesSelecionado] = useState(new Date().toISOString().slice(0, 7));
+  const [anoSelecionado, setAnoSelecionado] = useState(new Date().getFullYear().toString());
+  const [dataInicio, setDataInicio] = useState('');
+  const [dataFim, setDataFim] = useState('');
+  const [carregandoMetricas, setCarregandoMetricas] = useState(false);
   const [tituloLista, setTituloLista] = useState('Lista de músicas');
   const [dataLista, setDataLista] = useState(new Date().toISOString().slice(0, 10));
   const [observacao, setObservacao] = useState('');
@@ -157,6 +192,12 @@ export default function App() {
     carregarMusicas();
     carregarSugestoes();
   }, [perfil?.role]);
+  
+  useEffect(() => {
+    if (tela === 'metricas' && isAdmin) {
+      carregarMetricas();
+    }
+  }, [tela, isAdmin, filtroPeriodo, mesSelecionado, anoSelecionado, dataInicio, dataFim]);
 
   const filtradas = useMemo(() => {
     const q = normalizarTexto(busca);
@@ -403,6 +444,117 @@ export default function App() {
 
     setSugestoes(completas);
     setSugestaoAberta((atual) => completas.find((item) => item.id === atual?.id) || null);
+  }
+  
+  async function carregarMetricas() {
+    setCarregandoMetricas(true);
+    try {
+      // Query todas as playlists e itens para métricas
+      const [playlistsRes, itensRes, musicasRes, sugestoesRes] = await Promise.all([
+        supabase.from('sugestoes_playlists').select('*, sugestao_playlist_musicas(musica_id)'),
+        supabase.from('sugestao_playlist_musicas').select('*, sugestoes_playlists(created_at)'),
+        supabase.from('musicas').select('id, titulo, artista, status'),
+        supabase.from('sugestoes_playlists').select('id, created_at'),
+      ]);
+
+      let playlists = playlistsRes.data || [];
+      let itens = itensRes.data || [];
+      let musicas = musicasRes.data || [];
+      let sugestoes = sugestoesRes.data || [];
+
+      // Aplicar filtro de período
+      if (filtroPeriodo !== 'todos') {
+        let dataInicioFiltro, dataFimFiltro;
+        
+        if (filtroPeriodo === 'mes') {
+          const [ano, mes] = mesSelecionado.split('-');
+          dataInicioFiltro = new Date(parseInt(ano), parseInt(mes) - 1, 1);
+          dataFimFiltro = new Date(parseInt(ano), parseInt(mes), 0, 23, 59, 59);
+        } else if (filtroPeriodo === 'ano') {
+          dataInicioFiltro = new Date(parseInt(anoSelecionado), 0, 1);
+          dataFimFiltro = new Date(parseInt(anoSelecionado), 11, 31, 23, 59, 59);
+        } else if (filtroPeriodo === 'personalizado' && dataInicio && dataFim) {
+          dataInicioFiltro = new Date(dataInicio);
+          dataFimFiltro = new Date(dataFim + 'T23:59:59');
+        }
+
+        if (dataInicioFiltro && dataFimFiltro) {
+          playlists = playlists.filter(p => {
+            const data = new Date(p.created_at);
+            return data >= dataInicioFiltro && data <= dataFimFiltro;
+          });
+          const playlistIds = new Set(playlists.map(p => p.id));
+          itens = itens.filter(i => playlistIds.has(i.sugestao_id));
+          sugestoes = sugestoes.filter(s => playlistIds.has(s.id));
+        }
+      }
+
+      // Calcular métricas gerais
+      const totalAprovadas = musicas.filter(m => m.status === 'aprovada').length;
+      const totalPendentes = musicas.filter(m => m.status === 'pendente').length;
+
+      setMetricas({
+        totalMusicas: musicas.length,
+        totalPlaylists: playlists.length,
+        totalSugestoes: sugestoes.length,
+        totalAprovadas,
+        totalPendentes,
+      });
+
+      // Calcular músicas mais selecionadas
+      const musicaCount = {};
+      itens.forEach(item => {
+        if (item.musica_id) {
+          musicaCount[item.musica_id] = (musicaCount[item.musica_id] || 0) + 1;
+        }
+      });
+
+      const topMusicas = Object.entries(musicaCount)
+        .map(([musicaId, count]) => {
+          const musica = musicas.find(m => m.id === musicaId);
+          return {
+            id: musicaId,
+            titulo: musica?.titulo || 'Música desconhecida',
+            artista: musica?.artista || 'Artista desconhecido',
+            vezes: count,
+          };
+        })
+        .sort((a, b) => b.vezes - a.vezes);
+
+      setMusicasMaisSelecionadas(topMusicas);
+
+      // Calcular playlists por mês
+      const playlistsMes = {};
+      playlists.forEach(p => {
+        const data = new Date(p.created_at);
+        const key = `${data.getFullYear()}-${String(data.getMonth() + 1).padStart(2, '0')}`;
+        playlistsMes[key] = (playlistsMes[key] || 0) + 1;
+      });
+
+      const playlistsPorMesArr = Object.entries(playlistsMes)
+        .map(([mes, count]) => ({ mes, playlists: count }))
+        .sort((a, b) => a.mes.localeCompare(b.mes));
+
+      setPlaylistsPorMes(playlistsPorMesArr);
+
+      // Calcular sugestões por mês
+      const sugestoesMes = {};
+      sugestoes.forEach(s => {
+        const data = new Date(s.created_at);
+        const key = `${data.getFullYear()}-${String(data.getMonth() + 1).padStart(2, '0')}`;
+        sugestoesMes[key] = (sugestoesMes[key] || 0) + 1;
+      });
+
+      const sugestoesPorMesArr = Object.entries(sugestoesMes)
+        .map(([mes, count]) => ({ mes, sugestoes: count }))
+        .sort((a, b) => a.mes.localeCompare(b.mes));
+
+      setSugestoesPorMes(sugestoesPorMesArr);
+    } catch (error) {
+      console.error('Erro ao carregar métricas:', error);
+    } finally {
+      setCarregandoMetricas(false);
+    }
   }
 
   async function carregarUsuarios() {
@@ -1048,13 +1200,261 @@ export default function App() {
         </main>
       )}
 
+      {tela === 'metricas' && isAdmin && (
+        <main className="grid gap-4">
+          <section className={panel}>
+            <div className="mb-4 flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <h2 className="text-xl font-black">Métricas</h2>
+                <p className="text-sm text-slate-300">Análise de músicas e playlists</p>
+              </div>
+            </div>
+
+            {/* Filtro de período */}
+            <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4 items-end">
+              <div>
+                <label className="mb-1 block text-sm font-bold text-slate-200 flex items-center gap-2">
+                  <Filter className="h-4 w-4" />
+                  Período
+                </label>
+                <select
+                  className={input}
+                  value={filtroPeriodo}
+                  onChange={(e) => setFiltroPeriodo(e.target.value)}
+                >
+                  <option value="todos">Todo o período</option>
+                  <option value="mes">Por mês</option>
+                  <option value="ano">Por ano</option>
+                  <option value="personalizado">Personalizado</option>
+                </select>
+              </div>
+
+              {filtroPeriodo === 'mes' && (
+                <div>
+                  <label className="mb-1 block text-sm font-bold text-slate-200">Mês</label>
+                  <input
+                    className={input}
+                    type="month"
+                    value={mesSelecionado}
+                    onChange={(e) => setMesSelecionado(e.target.value)}
+                  />
+                </div>
+              )}
+
+              {filtroPeriodo === 'ano' && (
+                <div>
+                  <label className="mb-1 block text-sm font-bold text-slate-200">Ano</label>
+                  <input
+                    className={input}
+                    type="number"
+                    value={anoSelecionado}
+                    onChange={(e) => setAnoSelecionado(e.target.value)}
+                    min="2020"
+                    max={new Date().getFullYear()}
+                  />
+                </div>
+              )}
+
+              {filtroPeriodo === 'personalizado' && (
+                <>
+                  <div>
+                    <label className="mb-1 block text-sm font-bold text-slate-200">Data Início</label>
+                    <input
+                      className={input}
+                      type="date"
+                      value={dataInicio}
+                      onChange={(e) => setDataInicio(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-bold text-slate-200">Data Fim</label>
+                    <input
+                      className={input}
+                      type="date"
+                      value={dataFim}
+                      onChange={(e) => setDataFim(e.target.value)}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+
+            {carregandoMetricas ? (
+              <p className="text-sm text-slate-300">Carregando métricas...</p>
+            ) : (
+              <>
+                {/* Cards de métricas gerais */}
+                <div className="mb-6 grid grid-cols-2 lg:grid-cols-5 gap-3">
+                  <div className="rounded-xl border border-teal-300/20 bg-teal-300/10 p-4">
+                    <div className="flex items-center gap-3">
+                      <Music2 className="h-8 w-8 text-teal-300" />
+                      <div>
+                        <p className="text-2xl font-black text-white">{metricas.totalMusicas}</p>
+                        <p className="text-xs text-slate-300">Músicas cadastradas</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-purple-300/20 bg-purple-300/10 p-4">
+                    <div className="flex items-center gap-3">
+                      <ListMusic className="h-8 w-8 text-purple-300" />
+                      <div>
+                        <p className="text-2xl font-black text-white">{metricas.totalPlaylists}</p>
+                        <p className="text-xs text-slate-300">Playlists criadas</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-blue-300/20 bg-blue-300/10 p-4">
+                    <div className="flex items-center gap-3">
+                      <MessageSquare className="h-8 w-8 text-blue-300" />
+                      <div>
+                        <p className="text-2xl font-black text-white">{metricas.totalSugestoes}</p>
+                        <p className="text-xs text-slate-300">Sugestões recebidas</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-emerald-300/20 bg-emerald-300/10 p-4">
+                    <div className="flex items-center gap-3">
+                      <CheckCircle2 className="h-8 w-8 text-emerald-300" />
+                      <div>
+                        <p className="text-2xl font-black text-white">{metricas.totalAprovadas}</p>
+                        <p className="text-xs text-slate-300">Músicas aprovadas</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-amber-300/20 bg-amber-300/10 p-4">
+                    <div className="flex items-center gap-3">
+                      <Clock className="h-8 w-8 text-amber-300" />
+                      <div>
+                        <p className="text-2xl font-black text-white">{metricas.totalPendentes}</p>
+                        <p className="text-xs text-slate-300">Músicas pendentes</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Gráficos */}
+                <div className="mb-6 grid gap-4 lg:grid-cols-2">
+                  {/* Gráfico de músicas mais selecionadas */}
+                  <section className={`${panel} lg:col-span-2`}>
+                    <h3 className="mb-4 text-lg font-bold text-white">Músicas mais selecionadas</h3>
+                    <div className="h-80">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={musicasMaisSelecionadas.slice(0, 10)}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                          <XAxis dataKey="titulo" tick={{ fill: 'white', fontSize: 12 }} angle={-15} textAnchor="end" height={100} />
+                          <YAxis tick={{ fill: 'white' }} />
+                          <Tooltip
+                            contentStyle={{ backgroundColor: '#1e293b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }}
+                            labelStyle={{ color: 'white' }}
+                            itemStyle={{ color: '#5eead4' }}
+                          />
+                          <Bar dataKey="vezes" fill="#5eead4" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </section>
+
+                  {/* Gráfico de playlists por mês */}
+                  <section className={panel}>
+                    <h3 className="mb-4 text-lg font-bold text-white">Playlists por mês</h3>
+                    <div className="h-60">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={playlistsPorMes}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                          <XAxis dataKey="mes" tick={{ fill: 'white', fontSize: 12 }} />
+                          <YAxis tick={{ fill: 'white' }} />
+                          <Tooltip
+                            contentStyle={{ backgroundColor: '#1e293b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }}
+                            labelStyle={{ color: 'white' }}
+                            itemStyle={{ color: '#a78bfa' }}
+                          />
+                          <Bar dataKey="playlists" fill="#a78bfa" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </section>
+
+                  {/* Gráfico de sugestões por mês */}
+                  <section className={panel}>
+                    <h3 className="mb-4 text-lg font-bold text-white">Sugestões por mês</h3>
+                    <div className="h-60">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={sugestoesPorMes}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                          <XAxis dataKey="mes" tick={{ fill: 'white', fontSize: 12 }} />
+                          <YAxis tick={{ fill: 'white' }} />
+                          <Tooltip
+                            contentStyle={{ backgroundColor: '#1e293b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }}
+                            labelStyle={{ color: 'white' }}
+                            itemStyle={{ color: '#60a5fa' }}
+                          />
+                          <Bar dataKey="sugestoes" fill="#60a5fa" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </section>
+                </div>
+
+                {/* Tabela de ranking */}
+                <section className={panel}>
+                  <h3 className="mb-4 text-lg font-bold text-white">Ranking das músicas mais usadas</h3>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-white/10">
+                          <th className="py-3 px-4 text-left text-slate-300 font-bold">Posição</th>
+                          <th className="py-3 px-4 text-left text-slate-300 font-bold">Música</th>
+                          <th className="py-3 px-4 text-left text-slate-300 font-bold">Artista</th>
+                          <th className="py-3 px-4 text-right text-slate-300 font-bold">Vezes selecionada</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {musicasMaisSelecionadas.map((musica, index) => (
+                          <tr key={musica.id} className="border-b border-white/5 hover:bg-white/5">
+                            <td className="py-3 px-4 text-white">
+                              <span className={`inline-flex items-center justify-center h-8 w-8 rounded-full font-bold ${
+                                index === 0 ? 'bg-amber-300 text-slate-950' :
+                                index === 1 ? 'bg-slate-300 text-slate-950' :
+                                index === 2 ? 'bg-amber-600 text-white' :
+                                'bg-white/10 text-white'
+                              }`}>
+                                {index + 1}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 text-white truncate max-w-xs">{musica.titulo}</td>
+                            <td className="py-3 px-4 text-slate-300 truncate max-w-xs">{musica.artista}</td>
+                            <td className="py-3 px-4 text-right text-teal-300 font-bold">{musica.vezes}</td>
+                          </tr>
+                        ))}
+                        {musicasMaisSelecionadas.length === 0 && (
+                          <tr>
+                            <td colSpan="4" className="py-8 text-center text-slate-400">
+                              Nenhuma música foi selecionada ainda
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              </>
+            )}
+          </section>
+        </main>
+      )}
+
       <nav className="fixed inset-x-0 bottom-0 z-10 mx-auto max-w-md border-t border-white/15 bg-slate-950/80 px-2 py-3 backdrop-blur-xl sm:max-w-2xl lg:max-w-5xl">
-        <div className={`grid gap-2 ${isAdmin ? 'grid-cols-6' : 'grid-cols-4'}`}>
+        <div className={`grid gap-2 ${isAdmin ? 'grid-cols-7' : 'grid-cols-4'}`}>
           <button className={`rounded-xl px-1 py-2 text-xs font-bold ${tela === 'playlist' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => setTela('playlist')}><ListMusic className="mx-auto mb-1 h-5 w-5" />Lista</button>
           <button className={`rounded-xl px-1 py-2 text-xs font-bold ${tela === 'sugestoes' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => { setTela('sugestoes'); carregarSugestoes(); }}><Inbox className="mx-auto mb-1 h-5 w-5" />Sug.</button>
           <button className={`rounded-xl px-1 py-2 text-xs font-bold ${tela === 'musicas' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => setTela('musicas')}><Music className="mx-auto mb-1 h-5 w-5" />Músicas</button>
           {isAdmin && <button className={`rounded-xl px-1 py-2 text-xs font-bold ${tela === 'aprovar' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => setTela('aprovar')}><ListChecks className="mx-auto mb-1 h-5 w-5" />Aprovar</button>}
           {isAdmin && <button className={`rounded-xl px-1 py-2 text-xs font-bold ${tela === 'usuarios' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => { setTela('usuarios'); carregarUsuarios(); }}><User className="mx-auto mb-1 h-5 w-5" />Usuários</button>}
+          {isAdmin && <button className={`rounded-xl px-1 py-2 text-xs font-bold ${tela === 'metricas' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => setTela('metricas')}><BarChart3 className="mx-auto mb-1 h-5 w-5" />Métricas</button>}
           <button className={`rounded-xl px-1 py-2 text-xs font-bold ${tela === 'form' ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => abrirFormulario()}><Plus className="mx-auto mb-1 h-5 w-5" />Add</button>
         </div>
       </nav>
