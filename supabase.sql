@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS public.musicas (
   categoria TEXT,
   link TEXT,
   duracao TEXT,
+  tom TEXT,
+  cifra TEXT,
   visualizacoes TEXT,
   ativo BOOLEAN DEFAULT TRUE,
   status TEXT NOT NULL DEFAULT 'aprovada' CHECK (status IN ('pendente', 'aprovada', 'recusada')),
@@ -31,6 +33,8 @@ CREATE TABLE IF NOT EXISTS public.musicas (
 -- Adiciona colunas que podem faltar na tabela musicas
 DO $$ BEGIN
   ALTER TABLE public.musicas
+    ADD COLUMN IF NOT EXISTS tom TEXT,
+    ADD COLUMN IF NOT EXISTS cifra TEXT,
     ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'aprovada' CHECK (status IN ('pendente', 'aprovada', 'recusada')),
     ADD COLUMN IF NOT EXISTS suggested_by UUID REFERENCES auth.users(id),
     ADD COLUMN IF NOT EXISTS approved_by UUID REFERENCES auth.users(id),
@@ -87,6 +91,8 @@ CREATE TABLE IF NOT EXISTS public.lista_whatsapp_musicas (
 CREATE INDEX IF NOT EXISTS idx_profiles_role ON public.profiles(role);
 CREATE INDEX IF NOT EXISTS idx_musicas_titulo ON public.musicas(titulo);
 CREATE INDEX IF NOT EXISTS idx_musicas_status ON public.musicas(status);
+CREATE INDEX IF NOT EXISTS idx_musicas_categoria ON public.musicas(categoria);
+CREATE INDEX IF NOT EXISTS idx_musicas_tom ON public.musicas(tom);
 CREATE INDEX IF NOT EXISTS idx_sugestoes_status ON public.sugestoes_playlists(status);
 CREATE INDEX IF NOT EXISTS idx_sugestoes_created_by ON public.sugestoes_playlists(created_by);
 CREATE INDEX IF NOT EXISTS idx_sugestao_musicas_sugestao ON public.sugestao_playlist_musicas(sugestao_id);
@@ -144,7 +150,7 @@ CREATE POLICY "profiles_select" ON public.profiles
   FOR SELECT USING (id = auth.uid() OR public.is_admin());
 
 CREATE POLICY "profiles_insert_own" ON public.profiles
-  FOR INSERT WITH CHECK (id = auth.uid());
+  FOR INSERT WITH CHECK (id = auth.uid() AND role = 'moderador');
 
 CREATE POLICY "profiles_update_admin" ON public.profiles
   FOR UPDATE USING (public.is_admin()) WITH CHECK (public.is_admin());
@@ -162,7 +168,11 @@ CREATE POLICY "musicas_select" ON public.musicas
   FOR SELECT USING (status = 'aprovada' OR suggested_by = auth.uid() OR public.is_admin());
 
 CREATE POLICY "musicas_insert_auth" ON public.musicas
-  FOR INSERT WITH CHECK (auth.uid() IS NOT NULL);
+  FOR INSERT WITH CHECK (
+    auth.uid() IS NOT NULL
+    AND suggested_by = auth.uid()
+    AND (public.is_admin() OR status = 'pendente')
+  );
 
 CREATE POLICY "musicas_update_admin" ON public.musicas
   FOR UPDATE USING (public.is_admin()) WITH CHECK (public.is_admin());
@@ -180,7 +190,10 @@ CREATE POLICY "sugestoes_select" ON public.sugestoes_playlists
   FOR SELECT USING (created_by = auth.uid() OR public.is_admin());
 
 CREATE POLICY "sugestoes_insert_own" ON public.sugestoes_playlists
-  FOR INSERT WITH CHECK (created_by = auth.uid());
+  FOR INSERT WITH CHECK (
+    created_by = auth.uid()
+    AND (public.is_admin() OR status = 'pendente')
+  );
 
 CREATE POLICY "sugestoes_update_admin" ON public.sugestoes_playlists
   FOR UPDATE USING (public.is_admin()) WITH CHECK (public.is_admin());

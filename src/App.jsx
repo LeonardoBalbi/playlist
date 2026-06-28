@@ -27,7 +27,14 @@ import {
   CheckCircle2,
   Clock,
   Filter,
-  KeyRound,
+  ArrowDown,
+  ArrowUp,
+  FileText,
+  GripVertical,
+  RotateCcw,
+  SlidersHorizontal,
+  Star,
+  WifiOff,
 } from 'lucide-react';
 import {
   BarChart,
@@ -40,11 +47,40 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 
-const vazio = { titulo: '', artista: '', categoria: '', link: '', duracao: '' };
+const vazio = { titulo: '', artista: '', categoria: '', link: '', duracao: '', tom: '', cifra: '' };
 const appShell = 'mx-auto flex min-h-screen w-full max-w-md flex-col px-4 pb-28 pt-5 sm:max-w-2xl lg:max-w-5xl';
 const panel = 'rounded-2xl border border-white/15 bg-white/10 p-4 shadow-2xl shadow-black/30 backdrop-blur-xl';
 const input = 'w-full rounded-xl border border-white/15 bg-white/10 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-300 focus:border-teal-300 focus:bg-white/15';
 const iconButton = 'inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-white/10 text-white hover:bg-white/20';
+const categoriasRapidas = ['louvor', 'adoração', 'santa ceia', 'culto jovem', 'entrada', 'encerramento'];
+const modeloWhatsAppPadrao = '🎵 *{titulo}*\n📅 Data: {data}\n{observacao}\n\n*Músicas:*\n{musicas}';
+const configWhatsAppPadrao = { destinoTipo: 'escolher', telefoneDestino: '', linkGrupo: '', modeloMensagem: modeloWhatsAppPadrao };
+
+function carregarJsonLocal(chave, fallback) {
+  try {
+    const salvo = localStorage.getItem(chave);
+    return salvo ? { ...fallback, ...JSON.parse(salvo) } : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function carregarArrayLocal(chave) {
+  try {
+    const salvo = localStorage.getItem(chave);
+    return salvo ? JSON.parse(salvo) : [];
+  } catch {
+    return [];
+  }
+}
+
+function salvarLocal(chave, valor) {
+  try {
+    localStorage.setItem(chave, JSON.stringify(valor));
+  } catch {
+    // Ignora falha de armazenamento local.
+  }
+}
 
 function normalizarTexto(texto) {
   if (!texto) return '';
@@ -69,7 +105,13 @@ function mensagemLogin(error) {
 
 function erroSchemaCache(error, nomeObjeto = '') {
   const texto = `${error?.code || ''} ${error?.message || ''} ${error?.details || ''}`.toLowerCase();
-  return texto.includes('schema cache') && (!nomeObjeto || texto.includes(nomeObjeto.toLowerCase()));
+  const erroEstrutura =
+    texto.includes('schema cache') ||
+    texto.includes('does not exist') ||
+    error?.code === '42703' ||
+    error?.code === '42P01';
+
+  return erroEstrutura && (!nomeObjeto || texto.includes(nomeObjeto.toLowerCase()));
 }
 
 function mensagemBancoDesatualizado(error) {
@@ -78,6 +120,44 @@ function mensagemBancoDesatualizado(error) {
     `Erro recebido: ${error.message}`,
     'Execute o arquivo supabase.sql no SQL Editor do Supabase e rode o comando NOTIFY pgrst, \'reload schema\'; no final.',
   ].join(' ');
+}
+
+function erroColunasMusicaExtras(error) {
+  const texto = `${error?.code || ''} ${error?.message || ''} ${error?.details || ''}`.toLowerCase();
+  return (
+    texto.includes('musicas_1.tom') ||
+    texto.includes('musicas_1.cifra') ||
+    texto.includes("'tom' column of 'musicas'") ||
+    texto.includes("'cifra' column of 'musicas'")
+  );
+}
+
+const extrasMusicaPrefixo = 'playlist_extras_v1:';
+
+function serializarExtrasMusica(musica) {
+  return `${extrasMusicaPrefixo}${JSON.stringify({
+    tom: musica.tom || '',
+    cifra: musica.cifra || '',
+  })}`;
+}
+
+function extrairExtrasMusica(valor) {
+  if (!valor || typeof valor !== 'string' || !valor.startsWith(extrasMusicaPrefixo)) return {};
+  try {
+    return JSON.parse(valor.slice(extrasMusicaPrefixo.length));
+  } catch {
+    return {};
+  }
+}
+
+function normalizarMusicaBanco(musica) {
+  if (!musica) return musica;
+  const extras = extrairExtrasMusica(musica.visualizacoes);
+  return {
+    ...musica,
+    tom: musica.tom || extras.tom || '',
+    cifra: musica.cifra || extras.cifra || '',
+  };
 }
 
 function normalizarData(data) {
@@ -93,19 +173,36 @@ function extrairYouTubeId(url) {
   return match ? match[1] : null;
 }
 
-function montarTextoLista(lista, musicas) {
-  const linhas = [];
-  linhas.push(`🎵 *${lista?.titulo || 'Lista de músicas'}*`);
-  linhas.push(`📅 Data: ${normalizarData(lista?.data_lista)}`);
-  if (lista?.observacao?.trim()) linhas.push(`📝 ${lista.observacao.trim()}`);
-  linhas.push('');
-  linhas.push('*Músicas:*');
-  musicas.forEach((m, i) => {
-    linhas.push(`${i + 1}. ${m.titulo}${m.artista ? ` - ${m.artista}` : ''}`);
-    if (m.link) linhas.push(`   ${m.link}`);
-  });
-  return linhas.join('\n');
+function montarLinhasMusicas(musicas) {
+  return musicas
+    .map((m, i) => {
+      const detalhes = [];
+      if (m.artista) detalhes.push(m.artista);
+      if (m.tom) detalhes.push(`Tom: ${m.tom}`);
+      if (m.categoria) detalhes.push(m.categoria);
+      if (m.duracao) detalhes.push(m.duracao);
+      const linhas = [`${i + 1}. ${m.titulo}${detalhes.length ? ` - ${detalhes.join(' • ')}` : ''}`];
+      if (m.cifra) linhas.push(`   Cifra: ${m.cifra}`);
+      if (m.link) linhas.push(`   YouTube: ${m.link}`);
+      return linhas.join('\n');
+    })
+    .join('\n');
 }
+
+function montarTextoLista(lista, musicas, modelo = modeloWhatsAppPadrao) {
+  const observacao = lista?.observacao?.trim() ? `📝 ${lista.observacao.trim()}` : '';
+  const campos = {
+    titulo: lista?.titulo || 'Lista de músicas',
+    data: normalizarData(lista?.data_lista),
+    observacao,
+    musicas: montarLinhasMusicas(musicas),
+    total: String(musicas.length),
+  };
+
+  const texto = (modelo || modeloWhatsAppPadrao).replace(/\{(titulo|data|observacao|musicas|total)\}/g, (_, chave) => campos[chave] || '');
+  return texto.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 
 export default function App() {
   const [session, setSession] = useState(null);
@@ -117,10 +214,9 @@ export default function App() {
   const [loginLoading, setLoginLoading] = useState(false);
   const [authFeedback, setAuthFeedback] = useState({ tipo: '', texto: '' });
   const [emailNaoConfirmado, setEmailNaoConfirmado] = useState(false);
-  const [novaSenha, setNovaSenha] = useState('');
-  const [confirmarNovaSenha, setConfirmarNovaSenha] = useState('');
   const [databaseError, setDatabaseError] = useState('');
-  const [modoAuth, setModoAuth] = useState('login'); // 'login', 'cadastro' ou 'recuperacao'
+  const [modoAuth, setModoAuth] = useState('login'); // 'login', 'cadastro', 'recuperar' ou 'novaSenha'
+  const [recuperandoSenha, setRecuperandoSenha] = useState(false);
 
   const [musicas, setMusicas] = useState([]);
   const [pendentes, setPendentes] = useState([]);
@@ -131,6 +227,13 @@ export default function App() {
   const [editando, setEditando] = useState(null);
   const [busca, setBusca] = useState('');
   const [previewMusica, setPreviewMusica] = useState(null);
+  const [favoritos, setFavoritos] = useState(() => carregarArrayLocal('playlist_favoritos'));
+  const [historicoEnvios, setHistoricoEnvios] = useState(() => carregarArrayLocal('playlist_historico_envios'));
+  const [configWhatsApp, setConfigWhatsApp] = useState(() => carregarJsonLocal('playlist_config_whatsapp', configWhatsAppPadrao));
+  const [mostrarConfig, setMostrarConfig] = useState(false);
+  const [modalWhatsApp, setModalWhatsApp] = useState(null);
+  const [arrastandoIndex, setArrastandoIndex] = useState(null);
+  const [online, setOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine);
   
   // Estados para métricas
   const [metricas, setMetricas] = useState({
@@ -169,6 +272,15 @@ export default function App() {
       return;
     }
 
+    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    const searchParams = new URLSearchParams(window.location.search);
+    const tipoLink = hashParams.get('type') || searchParams.get('type');
+    if (tipoLink === 'recovery') {
+      setRecuperandoSenha(true);
+      setModoAuth('novaSenha');
+      setAuthFeedback({ tipo: 'aviso', texto: 'Digite sua nova senha para concluir a recuperacao.' });
+    }
+
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
       setAuthLoading(false);
@@ -177,13 +289,11 @@ export default function App() {
     const { data: listener } = supabase.auth.onAuthStateChange((event, novaSession) => {
       setSession(novaSession);
       if (event === 'PASSWORD_RECOVERY') {
-        setModoAuth('recuperacao');
+        setRecuperandoSenha(true);
+        setModoAuth('novaSenha');
         setSenha('');
         setConfirmarSenha('');
-        setAuthFeedback({
-          tipo: 'aviso',
-          texto: 'Informe uma nova senha para concluir a recuperacao.',
-        });
+        setAuthFeedback({ tipo: 'aviso', texto: 'Digite sua nova senha para concluir a recuperacao.' });
       }
     });
 
@@ -211,12 +321,39 @@ export default function App() {
     }
   }, [tela, isAdmin, filtroPeriodo, mesSelecionado, anoSelecionado, dataInicio, dataFim]);
 
+  useEffect(() => {
+    salvarLocal('playlist_favoritos', favoritos);
+  }, [favoritos]);
+
+  useEffect(() => {
+    salvarLocal('playlist_historico_envios', historicoEnvios.slice(0, 30));
+  }, [historicoEnvios]);
+
+  useEffect(() => {
+    salvarLocal('playlist_config_whatsapp', configWhatsApp);
+  }, [configWhatsApp]);
+
+  useEffect(() => {
+    const atualizarOnline = () => setOnline(navigator.onLine);
+    window.addEventListener('online', atualizarOnline);
+    window.addEventListener('offline', atualizarOnline);
+    return () => {
+      window.removeEventListener('online', atualizarOnline);
+      window.removeEventListener('offline', atualizarOnline);
+    };
+  }, []);
+
   const filtradas = useMemo(() => {
     const q = normalizarTexto(busca);
-    return musicas.filter((m) =>
-      normalizarTexto([m.titulo, m.artista, m.categoria].join(' ')).includes(q)
-    );
-  }, [musicas, busca]);
+    return musicas
+      .filter((m) => (q === 'favoritas' ? favoritos.includes(m.id) : normalizarTexto([m.titulo, m.artista, m.categoria, m.tom, m.cifra].join(' ')).includes(q)))
+      .sort((a, b) => {
+        const favA = favoritos.includes(a.id) ? 1 : 0;
+        const favB = favoritos.includes(b.id) ? 1 : 0;
+        if (favA !== favB) return favB - favA;
+        return (a.titulo || '').localeCompare(b.titulo || '', 'pt-BR');
+      });
+  }, [musicas, busca, favoritos]);
 
   async function carregarPerfil() {
     const user = session.user;
@@ -362,75 +499,70 @@ export default function App() {
     });
   }
 
-  async function enviarRecuperacaoSenha() {
+  async function solicitarRecuperacao(e) {
+    e.preventDefault();
     const emailRecuperacao = email.trim();
+
     if (!emailRecuperacao) {
       setAuthFeedback({ tipo: 'erro', texto: 'Informe seu e-mail para recuperar a senha.' });
       return;
     }
 
     setLoginLoading(true);
-    setEmailNaoConfirmado(false);
     setAuthFeedback({ tipo: '', texto: '' });
 
-    const { error } = await supabase.auth.resetPasswordForEmail(emailRecuperacao, {
-      redirectTo: window.location.origin,
-    });
+    const redirectTo = `${window.location.origin}${window.location.pathname}`;
+    const { error } = await supabase.auth.resetPasswordForEmail(emailRecuperacao, { redirectTo });
 
     setLoginLoading(false);
 
     if (error) {
-      setAuthFeedback({ tipo: 'erro', texto: error.message });
+      setAuthFeedback({ tipo: 'erro', texto: mensagemLogin(error) });
       return;
     }
 
     setAuthFeedback({
       tipo: 'sucesso',
-      texto: 'Enviei o link de recuperacao. Abra o e-mail e clique no link para criar uma nova senha.',
+      texto: 'Enviei o link de recuperacao para seu e-mail. Abra o link e cadastre uma nova senha.',
     });
   }
 
   async function atualizarSenha(e) {
     e.preventDefault();
 
-    if (!novaSenha || !confirmarNovaSenha) {
-      setAuthFeedback({ tipo: 'erro', texto: 'Informe e confirme a nova senha.' });
+    if (!senha || !confirmarSenha) {
+      setAuthFeedback({ tipo: 'erro', texto: 'Digite e confirme a nova senha.' });
       return;
     }
 
-    if (novaSenha !== confirmarNovaSenha) {
+    if (senha !== confirmarSenha) {
       setAuthFeedback({ tipo: 'erro', texto: 'As senhas nao conferem.' });
       return;
     }
 
-    if (novaSenha.length < 6) {
+    if (senha.length < 6) {
       setAuthFeedback({ tipo: 'erro', texto: 'A senha deve ter pelo menos 6 caracteres.' });
       return;
     }
 
     setLoginLoading(true);
-    setAuthFeedback({ tipo: '', texto: '' });
-
-    const { error } = await supabase.auth.updateUser({ password: novaSenha });
+    const { error } = await supabase.auth.updateUser({ password: senha });
+    setLoginLoading(false);
 
     if (error) {
-      setLoginLoading(false);
-      setAuthFeedback({ tipo: 'erro', texto: error.message });
+      setAuthFeedback({ tipo: 'erro', texto: mensagemLogin(error) });
       return;
     }
 
+    setSenha('');
+    setConfirmarSenha('');
+    setRecuperandoSenha(false);
+    setModoAuth('login');
+    window.history.replaceState({}, document.title, window.location.pathname);
     await supabase.auth.signOut();
     setSession(null);
     setPerfil(null);
-    setNovaSenha('');
-    setConfirmarNovaSenha('');
-    setSenha('');
-    setModoAuth('login');
-    setLoginLoading(false);
-    setAuthFeedback({
-      tipo: 'sucesso',
-      texto: 'Senha alterada com sucesso. Entre novamente usando a nova senha.',
-    });
+    setAuthFeedback({ tipo: 'sucesso', texto: 'Senha alterada com sucesso. Entre novamente com a nova senha.' });
   }
 
   async function sair() {
@@ -455,7 +587,7 @@ export default function App() {
       return alert(error.message);
     }
 
-    setMusicas(data || []);
+    setMusicas((data || []).map(normalizarMusicaBanco));
 
     if (isAdmin) {
       const { data: aguardando, error: erroPendentes } = await supabase
@@ -472,7 +604,7 @@ export default function App() {
         return alert(erroPendentes.message);
       }
 
-      setPendentes(aguardando || []);
+      setPendentes((aguardando || []).map(normalizarMusicaBanco));
     } else {
       setPendentes([]);
     }
@@ -501,11 +633,33 @@ export default function App() {
       return;
     }
 
-    const { data: itens, error: erroItens } = await supabase
+    let { data: itens, error: erroItens } = await supabase
       .from('sugestao_playlist_musicas')
-      .select('sugestao_id, ordem, musicas(id, titulo, artista, categoria, link, duracao)')
+      .select('sugestao_id, ordem, musicas(id, titulo, artista, categoria, link, duracao, visualizacoes, tom, cifra)')
       .in('sugestao_id', ids)
       .order('ordem', { ascending: true });
+
+    if (erroColunasMusicaExtras(erroItens)) {
+      const fallback = await supabase
+        .from('sugestao_playlist_musicas')
+        .select('sugestao_id, ordem, musicas(id, titulo, artista, categoria, link, duracao, visualizacoes)')
+        .in('sugestao_id', ids)
+        .order('ordem', { ascending: true });
+
+      itens = fallback.data;
+      erroItens = fallback.error;
+
+      if (erroItens && erroSchemaCache(erroItens, 'visualizacoes')) {
+        const fallbackSemExtras = await supabase
+          .from('sugestao_playlist_musicas')
+          .select('sugestao_id, ordem, musicas(id, titulo, artista, categoria, link, duracao)')
+          .in('sugestao_id', ids)
+          .order('ordem', { ascending: true });
+
+        itens = fallbackSemExtras.data;
+        erroItens = fallbackSemExtras.error;
+      }
+    }
 
     if (erroItens) {
       if (erroSchemaCache(erroItens)) {
@@ -516,12 +670,14 @@ export default function App() {
       return alert(erroItens.message);
     }
 
+    setDatabaseError('');
+
     const completas = (listas || []).map((lista) => ({
       ...lista,
       musicas: (itens || [])
         .filter((item) => item.sugestao_id === lista.id)
         .sort((a, b) => a.ordem - b.ordem)
-        .map((item) => item.musicas)
+        .map((item) => normalizarMusicaBanco(item.musicas))
         .filter(Boolean),
     }));
 
@@ -717,6 +873,102 @@ export default function App() {
     setSelecionadas(existe ? selecionadas.filter((m) => m.id !== musica.id) : [...selecionadas, musica]);
   }
 
+  function moverSelecionada(index, direcao) {
+    const novoIndex = index + direcao;
+    if (novoIndex < 0 || novoIndex >= selecionadas.length) return;
+    setSelecionadas((atuais) => {
+      const copia = [...atuais];
+      const [item] = copia.splice(index, 1);
+      copia.splice(novoIndex, 0, item);
+      return copia;
+    });
+  }
+
+  function removerSelecionada(id) {
+    setSelecionadas((atuais) => atuais.filter((m) => m.id !== id));
+  }
+
+  function limparSelecionadas() {
+    if (selecionadas.length === 0) return;
+    if (!confirm('Deseja limpar todas as músicas selecionadas?')) return;
+    setSelecionadas([]);
+    setMensagem('');
+  }
+
+  function alternarFavorito(id) {
+    setFavoritos((atuais) => (atuais.includes(id) ? atuais.filter((item) => item !== id) : [id, ...atuais]));
+  }
+
+  function aplicarCategoriaRapida(categoria) {
+    setBusca(categoria);
+    setTela('musicas');
+  }
+
+  function usarSugestaoComoLista(sugestao) {
+    setTituloLista(`${sugestao.titulo} - cópia`);
+    setDataLista(new Date().toISOString().slice(0, 10));
+    setObservacao(sugestao.observacao || '');
+    setSelecionadas(sugestao.musicas || []);
+    setMensagem('');
+    setTela('playlist');
+  }
+
+  function abrirConfirmacaoWhatsApp(texto = montarTexto()) {
+    if (selecionadas.length === 0 && !texto.trim()) return alert('Selecione pelo menos uma música.');
+    setModalWhatsApp({
+      texto,
+      destinoTipo: configWhatsApp.destinoTipo || (configWhatsApp.telefoneDestino ? 'numero' : 'escolher'),
+      telefone: configWhatsApp.telefoneDestino || '',
+      linkGrupo: configWhatsApp.linkGrupo || '',
+    });
+  }
+
+  function registrarHistoricoEnvio(texto) {
+    const item = {
+      id: crypto?.randomUUID ? crypto.randomUUID() : String(Date.now()),
+      titulo: tituloLista || 'Lista de músicas',
+      data_lista: dataLista,
+      total: selecionadas.length,
+      texto,
+      enviado_em: new Date().toISOString(),
+    };
+    setHistoricoEnvios((atuais) => [item, ...atuais].slice(0, 30));
+  }
+
+  function abrirWhatsAppDireto(texto, destino = modalWhatsApp || configWhatsApp) {
+    const tipo = destino?.destinoTipo || (destino?.telefone ? 'numero' : 'escolher');
+    const telefone = (destino?.telefone || destino?.telefoneDestino || '').replace(/\D/g, '');
+    const linkGrupo = (destino?.linkGrupo || '').trim();
+    let url = `https://wa.me/?text=${encodeURIComponent(texto)}`;
+
+    if (tipo === 'numero') {
+      if (!telefone) return alert('Informe o telefone destino.');
+      url = `https://wa.me/${telefone}?text=${encodeURIComponent(texto)}`;
+    }
+
+    if (tipo === 'grupo') {
+      if (!linkGrupo) return alert('Informe o link do grupo.');
+      const grupoUrl = /^https?:\/\//i.test(linkGrupo) ? linkGrupo : `https://${linkGrupo}`;
+      navigator.clipboard?.writeText(texto).catch(() => {});
+      url = grupoUrl;
+    }
+
+    window.open(url, '_blank');
+    registrarHistoricoEnvio(texto);
+    setModalWhatsApp(null);
+
+    if (tipo === 'grupo') {
+      alert('Mensagem copiada. Cole no grupo do WhatsApp.');
+    }
+  }
+
+  function exportarTextoComoPDF(texto = montarTexto(), titulo = tituloLista) {
+    const janela = window.open('', '_blank');
+    if (!janela) return alert('O navegador bloqueou a janela de impressão. Permita pop-ups para exportar.');
+    janela.document.write(`<!doctype html><html><head><title>${titulo}</title><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;margin:32px;line-height:1.5;color:#111}pre{white-space:pre-wrap;font-size:14px}.cabecalho{border-bottom:1px solid #ddd;margin-bottom:20px;padding-bottom:12px}</style></head><body><div class="cabecalho"><h1>${titulo}</h1><p>Gerado pelo app Lista de Músicas</p></div><pre>${texto.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</pre><script>window.onload=()=>window.print();</script></body></html>`);
+    janela.document.close();
+  }
+
   function abrirFormulario(musica = null) {
     if (musica) {
       setEditando(musica.id);
@@ -726,6 +978,8 @@ export default function App() {
         categoria: musica.categoria || '',
         link: musica.link || '',
         duracao: musica.duracao || '',
+        tom: musica.tom || '',
+        cifra: musica.cifra || '',
       });
     } else {
       setEditando(null);
@@ -744,17 +998,46 @@ export default function App() {
       categoria: form.categoria?.trim() || null,
       link: form.link?.trim() || null,
       duracao: form.duracao?.trim() || null,
+      tom: form.tom?.trim() || null,
+      cifra: form.cifra?.trim() || null,
       status: isAdmin ? 'aprovada' : 'pendente',
       suggested_by: session.user.id,
       updated_at: new Date().toISOString(),
     };
 
-    const req = editando && isAdmin
-      ? supabase.from('musicas').update(payload).eq('id', editando)
-      : supabase.from('musicas').insert(payload);
+    const salvarPayload = (dados) => editando && isAdmin
+      ? supabase.from('musicas').update(dados).eq('id', editando)
+      : supabase.from('musicas').insert(dados);
 
-    const { error } = await req;
+    let salvouSemCamposNovos = false;
+    let { error } = await salvarPayload(payload);
+
+    if (erroColunasMusicaExtras(error)) {
+      const { tom, cifra, ...payloadSemCamposNovos } = payload;
+      const fallback = await salvarPayload({
+        ...payloadSemCamposNovos,
+        visualizacoes: serializarExtrasMusica({ tom, cifra }),
+      });
+      error = fallback.error;
+
+      if (error && erroSchemaCache(error, 'visualizacoes')) {
+        const fallbackSemExtras = await salvarPayload(payloadSemCamposNovos);
+        error = fallbackSemExtras.error;
+      }
+
+      salvouSemCamposNovos = !error;
+    }
+
     if (error) return alert(error.message);
+
+    if (salvouSemCamposNovos) {
+      alert('Musica salva. Usei modo compatibilidade para guardar tom/cifra enquanto o cache da API do Supabase nao atualiza.');
+      setForm(vazio);
+      setEditando(null);
+      await carregarMusicas();
+      setTela(isAdmin ? 'musicas' : 'playlist');
+      return;
+    }
 
     alert(isAdmin ? 'Música salva.' : 'Música enviada para aprovação do administrador.');
     setForm(vazio);
@@ -782,7 +1065,7 @@ export default function App() {
   }
 
   function montarTexto() {
-    return montarTextoLista({ titulo: tituloLista, data_lista: dataLista, observacao }, selecionadas);
+    return montarTextoLista({ titulo: tituloLista, data_lista: dataLista, observacao }, selecionadas, configWhatsApp.modeloMensagem);
   }
 
   async function enviarSugestao() {
@@ -838,7 +1121,7 @@ export default function App() {
   }
 
   function abrirWhatsApp(texto = montarTexto()) {
-    window.open(`https://wa.me/?text=${encodeURIComponent(texto)}`, '_blank');
+    abrirConfirmacaoWhatsApp(texto);
   }
 
   async function tentarNovamenteBanco() {
@@ -870,62 +1153,6 @@ export default function App() {
     return <div className={appShell}><section className={`${panel} mt-24`}>Carregando...</section></div>;
   }
 
-  if (modoAuth === 'recuperacao') {
-    return (
-      <div className={appShell}>
-        <section className={`${panel} mt-20`}>
-          <div className="mb-6 flex items-center gap-3">
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-teal-300 text-slate-950">
-              <KeyRound className="h-6 w-6" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-black">Nova senha</h1>
-              <p className="text-sm text-slate-300">Crie uma nova senha para acessar o app.</p>
-            </div>
-          </div>
-
-          <form className="grid gap-3" onSubmit={atualizarSenha}>
-            <input
-              className={input}
-              type="password"
-              placeholder="Nova senha"
-              value={novaSenha}
-              onChange={(e) => setNovaSenha(e.target.value)}
-              minLength={6}
-            />
-            <input
-              className={input}
-              type="password"
-              placeholder="Confirmar nova senha"
-              value={confirmarNovaSenha}
-              onChange={(e) => setConfirmarNovaSenha(e.target.value)}
-              minLength={6}
-            />
-
-            {authFeedback.texto && (
-              <div
-                className={`rounded-xl border px-4 py-3 text-sm ${
-                  authFeedback.tipo === 'erro'
-                    ? 'border-red-300/30 bg-red-400/10 text-red-100'
-                    : authFeedback.tipo === 'sucesso'
-                    ? 'border-emerald-300/30 bg-emerald-400/10 text-emerald-100'
-                    : 'border-teal-200/30 bg-teal-300/10 text-teal-50'
-                }`}
-                role="status"
-              >
-                {authFeedback.texto}
-              </div>
-            )}
-
-            <button className="min-h-12 rounded-xl bg-teal-300 font-black text-slate-950" disabled={loginLoading}>
-              {loginLoading ? 'Salvando...' : 'Salvar nova senha'}
-            </button>
-          </form>
-        </section>
-      </div>
-    );
-  }
-
   if (databaseError) {
     return (
       <div className={appShell}>
@@ -955,7 +1182,7 @@ export default function App() {
     );
   }
 
-  if (!session || !perfil) {
+  if (!session || !perfil || recuperandoSenha) {
     return (
       <div className={appShell}>
         <section className={`${panel} mt-20`}>
@@ -964,47 +1191,84 @@ export default function App() {
               <Shield className="h-6 w-6" />
             </div>
             <div>
-              <h1 className="text-2xl font-black">{modoAuth === 'login' ? 'Login' : 'Cadastre-se'}</h1>
+              <h1 className="text-2xl font-black">
+                {modoAuth === 'login'
+                  ? 'Login'
+                  : modoAuth === 'cadastro'
+                  ? 'Cadastre-se'
+                  : modoAuth === 'recuperar'
+                  ? 'Recuperar senha'
+                  : 'Nova senha'}
+              </h1>
               <p className="text-sm text-slate-300">
-                {modoAuth === 'login' ? 'Entre como admin ou moderador.' : 'Crie sua conta para usar o app.'}
+                {modoAuth === 'login'
+                  ? 'Entre como admin ou moderador.'
+                  : modoAuth === 'cadastro'
+                  ? 'Crie sua conta para usar o app.'
+                  : modoAuth === 'recuperar'
+                  ? 'Receba um link no e-mail para trocar a senha.'
+                  : 'Digite e confirme sua nova senha.'}
               </p>
             </div>
           </div>
 
-          {/* Abas para alternar entre login e cadastro */}
-          <div className="mb-4 grid grid-cols-2 gap-2 rounded-xl border border-white/10 bg-white/5 p-1">
-            <button
-              className={`rounded-lg px-3 py-2 text-sm font-bold ${modoAuth === 'login' ? 'bg-teal-300 text-slate-950' : 'text-white hover:bg-white/10'}`}
-              onClick={() => {
-                setModoAuth('login');
-                setAuthFeedback({ tipo: '', texto: '' });
-                setEmailNaoConfirmado(false);
-                setConfirmarSenha('');
-              }}
-            >
-              Login
-            </button>
-            <button
-              className={`rounded-lg px-3 py-2 text-sm font-bold ${modoAuth === 'cadastro' ? 'bg-teal-300 text-slate-950' : 'text-white hover:bg-white/10'}`}
-              onClick={() => {
-                setModoAuth('cadastro');
-                setAuthFeedback({ tipo: '', texto: '' });
-                setEmailNaoConfirmado(false);
-              }}
-            >
-              Cadastre-se
-            </button>
-          </div>
+          {modoAuth !== 'novaSenha' && (
+            <div className="mb-4 grid grid-cols-2 gap-2 rounded-xl border border-white/10 bg-white/5 p-1">
+              <button
+                className={`rounded-lg px-3 py-2 text-sm font-bold ${modoAuth === 'login' ? 'bg-teal-300 text-slate-950' : 'text-white hover:bg-white/10'}`}
+                onClick={() => {
+                  setModoAuth('login');
+                  setAuthFeedback({ tipo: '', texto: '' });
+                  setConfirmarSenha('');
+                }}
+                type="button"
+              >
+                Login
+              </button>
+              <button
+                className={`rounded-lg px-3 py-2 text-sm font-bold ${modoAuth === 'cadastro' ? 'bg-teal-300 text-slate-950' : 'text-white hover:bg-white/10'}`}
+                onClick={() => {
+                  setModoAuth('cadastro');
+                  setAuthFeedback({ tipo: '', texto: '' });
+                }}
+                type="button"
+              >
+                Cadastre-se
+              </button>
+            </div>
+          )}
 
-          <form className="grid gap-3" onSubmit={modoAuth === 'login' ? entrar : cadastrar}>
-            <input className={input} type="email" placeholder="E-mail" value={email} onChange={(e) => setEmail(e.target.value)} />
-            <input className={input} type="password" placeholder="Senha" value={senha} onChange={(e) => setSenha(e.target.value)} />
+          <form
+            className="grid gap-3"
+            onSubmit={
+              modoAuth === 'login'
+                ? entrar
+                : modoAuth === 'cadastro'
+                ? cadastrar
+                : modoAuth === 'recuperar'
+                ? solicitarRecuperacao
+                : atualizarSenha
+            }
+          >
+            {modoAuth !== 'novaSenha' && (
+              <input className={input} type="email" placeholder="E-mail" value={email} onChange={(e) => setEmail(e.target.value)} />
+            )}
 
-            {modoAuth === 'cadastro' && (
+            {modoAuth !== 'recuperar' && (
               <input
                 className={input}
                 type="password"
-                placeholder="Confirmar senha"
+                placeholder={modoAuth === 'novaSenha' ? 'Nova senha' : 'Senha'}
+                value={senha}
+                onChange={(e) => setSenha(e.target.value)}
+              />
+            )}
+
+            {(modoAuth === 'cadastro' || modoAuth === 'novaSenha') && (
+              <input
+                className={input}
+                type="password"
+                placeholder={modoAuth === 'novaSenha' ? 'Confirmar nova senha' : 'Confirmar senha'}
                 value={confirmarSenha}
                 onChange={(e) => setConfirmarSenha(e.target.value)}
               />
@@ -1040,20 +1304,50 @@ export default function App() {
               {loginLoading
                 ? modoAuth === 'login'
                   ? 'Entrando...'
-                  : 'Cadastrando...'
+                  : modoAuth === 'cadastro'
+                  ? 'Cadastrando...'
+                  : modoAuth === 'recuperar'
+                  ? 'Enviando...'
+                  : 'Salvando...'
                 : modoAuth === 'login'
                 ? 'Entrar'
-                : 'Cadastrar'}
+                : modoAuth === 'cadastro'
+                ? 'Cadastrar'
+                : modoAuth === 'recuperar'
+                ? 'Enviar link de recuperação'
+                : 'Salvar nova senha'}
             </button>
 
             {modoAuth === 'login' && (
               <button
-                className="min-h-11 rounded-xl border border-white/15 bg-white/10 px-4 text-sm font-bold text-white"
-                disabled={loginLoading}
-                onClick={enviarRecuperacaoSenha}
                 type="button"
+                className="text-sm font-bold text-teal-200 underline-offset-4 hover:underline"
+                onClick={() => {
+                  setModoAuth('recuperar');
+                  setSenha('');
+                  setConfirmarSenha('');
+                  setAuthFeedback({ tipo: '', texto: '' });
+                }}
               >
                 Esqueci minha senha
+              </button>
+            )}
+
+            {(modoAuth === 'recuperar' || modoAuth === 'novaSenha') && (
+              <button
+                type="button"
+                className="min-h-11 rounded-xl border border-white/15 bg-white/10 px-4 text-sm font-bold text-white"
+                onClick={async () => {
+                  setModoAuth('login');
+                  setRecuperandoSenha(false);
+                  setSenha('');
+                  setConfirmarSenha('');
+                  setAuthFeedback({ tipo: '', texto: '' });
+                  window.history.replaceState({}, document.title, window.location.pathname);
+                  if (session) await supabase.auth.signOut();
+                }}
+              >
+                Voltar ao login
               </button>
             )}
           </form>
@@ -1062,7 +1356,7 @@ export default function App() {
     );
   }
 
-  const sugestaoTexto = sugestaoAberta ? montarTextoLista(sugestaoAberta, sugestaoAberta.musicas) : '';
+  const sugestaoTexto = sugestaoAberta ? montarTextoLista(sugestaoAberta, sugestaoAberta.musicas, configWhatsApp.modeloMensagem) : '';
 
   return (
     <div className={appShell}>
@@ -1081,21 +1375,174 @@ export default function App() {
         </button>
       </header>
 
+      {!online && (
+        <div className="mb-4 flex items-start gap-3 rounded-2xl border border-amber-300/30 bg-amber-300/10 p-4 text-amber-50">
+          <WifiOff className="mt-0.5 h-5 w-5 shrink-0" />
+          <div>
+            <strong className="block">Sem internet.</strong>
+            <span className="text-sm">Você pode visualizar as últimas listas salvas, mas precisa conectar para enviar ou atualizar.</span>
+          </div>
+        </div>
+      )}
+
+      {isAdmin && (pendentes.length > 0 || sugestoes.filter((s) => s.status === 'pendente').length > 0) && (
+        <button
+          className="mb-4 flex w-full items-center justify-between rounded-2xl border border-red-300/30 bg-red-400/15 p-4 text-left text-red-50"
+          onClick={() => setTela(pendentes.length > 0 ? 'aprovar' : 'sugestoes')}
+          type="button"
+        >
+          <span>
+            <strong className="block">Atenção: há itens aguardando aprovação</strong>
+            <span className="text-sm">{pendentes.length} músicas pendentes • {sugestoes.filter((s) => s.status === 'pendente').length} playlists pendentes</span>
+          </span>
+          <ListChecks className="h-5 w-5" />
+        </button>
+      )}
+
       {tela === 'playlist' && (
-        <main className="grid gap-4 lg:grid-cols-2">
+        <main className="grid gap-4 lg:grid-cols-[1.05fr_0.95fr]">
           <section className={panel}>
             <div className="mb-4 flex items-center justify-between gap-3">
-              <h2 className="text-xl font-black">{isAdmin ? 'CRIAR PLAY LIST' : 'SUGERIR PLAY LIST'}</h2>
+              <div>
+                <h2 className="text-xl font-black">{isAdmin ? 'CRIAR PLAY LIST' : 'SUGERIR PLAY LIST'}</h2>
+                <p className="text-sm text-slate-300">Monte a ordem, revise e confirme antes do WhatsApp.</p>
+              </div>
               <span className="rounded-full bg-teal-300/20 px-3 py-1 text-xs font-bold text-teal-100">
                 {selecionadas.length} músicas
               </span>
             </div>
+
             <div className="grid gap-3">
               <input className={input} placeholder="Título da lista" value={tituloLista} onChange={(e) => setTituloLista(e.target.value)} />
               <input className={input} type="date" value={dataLista} onChange={(e) => setDataLista(e.target.value)} />
               <textarea className={`${input} min-h-20 resize-none`} placeholder="Observação opcional" value={observacao} onChange={(e) => setObservacao(e.target.value)} />
             </div>
-            <div className="mt-4 grid grid-cols-3 gap-2">
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              {categoriasRapidas.map((categoria) => (
+                <button
+                  key={categoria}
+                  className="rounded-full border border-white/15 bg-white/10 px-3 py-2 text-xs font-bold uppercase tracking-wide text-white hover:bg-white/20"
+                  onClick={() => aplicarCategoriaRapida(categoria)}
+                  type="button"
+                >
+                  {categoria}
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
+              <button
+                className="flex w-full items-center justify-between text-left font-bold text-white"
+                onClick={() => setMostrarConfig(!mostrarConfig)}
+                type="button"
+              >
+                <span className="inline-flex items-center gap-2"><SlidersHorizontal className="h-4 w-4" /> Configuração do WhatsApp</span>
+                <span className="text-xs text-slate-300">{mostrarConfig ? 'ocultar' : 'editar'}</span>
+              </button>
+              {mostrarConfig && (
+                <div className="mt-3 grid gap-3">
+                  <select
+                    className={input}
+                    value={configWhatsApp.destinoTipo || (configWhatsApp.telefoneDestino ? 'numero' : 'escolher')}
+                    onChange={(e) => setConfigWhatsApp({ ...configWhatsApp, destinoTipo: e.target.value })}
+                  >
+                    <option value="escolher">Escolher no WhatsApp</option>
+                    <option value="numero">Enviar para numero</option>
+                    <option value="grupo">Abrir grupo</option>
+                  </select>
+                  {(configWhatsApp.destinoTipo || (configWhatsApp.telefoneDestino ? 'numero' : 'escolher')) === 'grupo' && (
+                    <>
+                      <input
+                        className={input}
+                        placeholder="Link do grupo. Ex: https://chat.whatsapp.com/..."
+                        value={configWhatsApp.linkGrupo || ''}
+                        onChange={(e) => setConfigWhatsApp({ ...configWhatsApp, linkGrupo: e.target.value })}
+                      />
+                      <p className="text-xs text-slate-300">Para grupo, a mensagem sera copiada e o link sera aberto para voce colar.</p>
+                    </>
+                  )}
+                  <input
+                    className={input}
+                    placeholder="Número destino. Ex: 5521999999999"
+                    value={configWhatsApp.telefoneDestino}
+                    onChange={(e) => setConfigWhatsApp({ ...configWhatsApp, telefoneDestino: e.target.value })}
+                  />
+                  <textarea
+                    className={`${input} min-h-36 resize-none font-mono text-xs`}
+                    value={configWhatsApp.modeloMensagem}
+                    onChange={(e) => setConfigWhatsApp({ ...configWhatsApp, modeloMensagem: e.target.value })}
+                  />
+                  <p className="text-xs text-slate-300">Campos disponíveis: {'{titulo}'}, {'{data}'}, {'{observacao}'}, {'{musicas}'}, {'{total}'}.</p>
+                  <button
+                    className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm font-bold text-white"
+                    onClick={() => setConfigWhatsApp(configWhatsAppPadrao)}
+                    type="button"
+                  >
+                    Restaurar modelo padrão
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <h3 className="font-black text-white">Músicas selecionadas</h3>
+                <button className="inline-flex items-center gap-1 rounded-xl border border-red-300/30 bg-red-400/10 px-3 py-2 text-xs font-bold text-red-100" onClick={limparSelecionadas} type="button">
+                  <Trash2 className="h-4 w-4" /> Limpar
+                </button>
+              </div>
+              <div className="grid max-h-[28rem] gap-2 overflow-auto pr-1">
+                {selecionadas.length === 0 && (
+                  <p className="rounded-xl border border-dashed border-white/15 bg-white/5 p-4 text-sm text-slate-300">
+                    Nenhuma música selecionada. Entre em Músicas, use as categorias rápidas ou toque em + para adicionar.
+                  </p>
+                )}
+                {selecionadas.map((m, index) => (
+                  <article
+                    key={`${m.id}-${index}`}
+                    draggable
+                    onDragStart={() => setArrastandoIndex(index)}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => {
+                      if (arrastandoIndex === null || arrastandoIndex === index) return;
+                      setSelecionadas((atuais) => {
+                        const copia = [...atuais];
+                        const [item] = copia.splice(arrastandoIndex, 1);
+                        copia.splice(index, 0, item);
+                        return copia;
+                      });
+                      setArrastandoIndex(null);
+                    }}
+                    className="rounded-2xl border border-white/10 bg-slate-950/30 p-3"
+                  >
+                    <div className="flex items-center gap-3">
+                      <GripVertical className="h-5 w-5 shrink-0 text-slate-400" />
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-teal-300 text-sm font-black text-slate-950">{index + 1}</span>
+                      <div className="min-w-0 flex-1">
+                        <strong className="block truncate text-white">{m.titulo}</strong>
+                        <span className="block truncate text-xs text-slate-300">
+                          {m.artista || 'Sem artista'} {m.tom ? `• Tom: ${m.tom}` : ''} {m.categoria ? `• ${m.categoria}` : ''}
+                        </span>
+                      </div>
+                      <div className="flex shrink-0 gap-1">
+                        {m.cifra && (
+                          <a className="inline-flex items-center gap-1 rounded-lg bg-white/10 px-2 py-2 text-xs font-bold text-white" href={m.cifra} target="_blank" rel="noopener noreferrer" title="Ver cifra">
+                            <FileText className="h-4 w-4" />
+                            Cifra
+                          </a>
+                        )}
+                        <button className="rounded-lg bg-white/10 p-2 text-white" onClick={() => moverSelecionada(index, -1)} disabled={index === 0} title="Subir" type="button"><ArrowUp className="h-4 w-4" /></button>
+                        <button className="rounded-lg bg-white/10 p-2 text-white" onClick={() => moverSelecionada(index, 1)} disabled={index === selecionadas.length - 1} title="Descer" type="button"><ArrowDown className="h-4 w-4" /></button>
+                        <button className="rounded-lg bg-red-400/15 p-2 text-red-100" onClick={() => removerSelecionada(m.id)} title="Remover" type="button"><X className="h-4 w-4" /></button>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
               <button className="inline-flex min-h-12 items-center justify-center gap-1 rounded-xl bg-teal-300 px-2 text-sm font-black text-slate-950" onClick={enviarSugestao}>
                 <Save className="h-4 w-4" />
                 {isAdmin ? 'Salvar' : 'Sugerir'}
@@ -1103,6 +1550,10 @@ export default function App() {
               <button className="inline-flex min-h-12 items-center justify-center gap-1 rounded-xl border border-white/15 bg-white/10 px-2 text-sm font-bold text-white" onClick={() => copiarTexto()}>
                 <Copy className="h-4 w-4" />
                 Copiar
+              </button>
+              <button className="inline-flex min-h-12 items-center justify-center gap-1 rounded-xl border border-white/15 bg-white/10 px-2 text-sm font-bold text-white" onClick={() => exportarTextoComoPDF()}>
+                <FileText className="h-4 w-4" />
+                PDF
               </button>
               {isAdmin && (
                 <button className="inline-flex min-h-12 items-center justify-center gap-1 rounded-xl bg-emerald-400 px-2 text-sm font-black text-slate-950" onClick={() => abrirWhatsApp()}>
@@ -1113,11 +1564,36 @@ export default function App() {
             </div>
           </section>
 
-          <section className={panel}>
-            <h2 className="mb-3 text-lg font-black">Prévia</h2>
-            <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-xl border border-white/10 bg-slate-950/35 p-4 text-sm leading-relaxed text-slate-100">
-              {mensagem || montarTexto()}
-            </pre>
+          <section className="grid gap-4">
+            <div className={panel}>
+              <h2 className="mb-3 text-lg font-black">Prévia</h2>
+              <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-xl border border-white/10 bg-slate-950/35 p-4 text-sm leading-relaxed text-slate-100">
+                {mensagem || montarTexto()}
+              </pre>
+            </div>
+
+            <div className={panel}>
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-lg font-black">Histórico de envios</h2>
+                  <p className="text-xs text-slate-300">Salvo neste aparelho para reutilizar rapidamente.</p>
+                </div>
+                <button className="rounded-xl border border-white/15 bg-white/10 p-2 text-white" onClick={() => setHistoricoEnvios([])} title="Limpar histórico" type="button"><RotateCcw className="h-4 w-4" /></button>
+              </div>
+              <div className="grid max-h-72 gap-2 overflow-auto pr-1">
+                {historicoEnvios.length === 0 && <p className="rounded-xl bg-white/10 p-4 text-sm text-slate-300">Nenhuma lista enviada ainda.</p>}
+                {historicoEnvios.slice(0, 8).map((item) => (
+                  <article key={item.id} className="rounded-xl border border-white/10 bg-white/5 p-3">
+                    <strong className="block truncate text-sm text-white">{item.titulo}</strong>
+                    <span className="block text-xs text-slate-300">{normalizarData(item.data_lista)} • {item.total} músicas</span>
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      <button className="rounded-lg border border-white/15 bg-white/10 px-2 py-2 text-xs font-bold text-white" onClick={() => copiarTexto(item.texto)} type="button">Copiar</button>
+                      <button className="rounded-lg bg-emerald-400 px-2 py-2 text-xs font-black text-slate-950" onClick={() => abrirConfirmacaoWhatsApp(item.texto)} type="button">Reenviar</button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </div>
           </section>
         </main>
       )}
@@ -1133,10 +1609,17 @@ export default function App() {
               <Plus className="h-5 w-5" />
             </button>
           </div>
-          <label className="mb-4 flex items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-3">
+          <label className="mb-3 flex items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-3">
             <Search className="h-5 w-5 text-slate-300" />
-            <input className="w-full bg-transparent py-3 text-sm text-white outline-none placeholder:text-slate-300" placeholder="Buscar música, artista ou categoria" value={busca} onChange={(e) => setBusca(e.target.value)} />
+            <input className="w-full bg-transparent py-3 text-sm text-white outline-none placeholder:text-slate-300" placeholder="Buscar música, artista, tom ou categoria" value={busca} onChange={(e) => setBusca(e.target.value)} />
           </label>
+          <div className="mb-4 flex flex-wrap gap-2">
+            <button className={`rounded-full px-3 py-2 text-xs font-bold ${busca === '' ? 'bg-teal-300 text-slate-950' : 'border border-white/15 bg-white/10 text-white'}`} onClick={() => setBusca('')} type="button">Todas</button>
+            <button className={`inline-flex items-center gap-1 rounded-full px-3 py-2 text-xs font-bold ${busca === 'favoritas' ? 'bg-amber-300 text-slate-950' : 'border border-white/15 bg-white/10 text-white'}`} onClick={() => setBusca('favoritas')} type="button"><Star className="h-3 w-3" />Favoritas</button>
+            {categoriasRapidas.map((categoria) => (
+              <button key={categoria} className={`rounded-full px-3 py-2 text-xs font-bold uppercase ${normalizarTexto(busca) === normalizarTexto(categoria) ? 'bg-teal-300 text-slate-950' : 'border border-white/15 bg-white/10 text-white'}`} onClick={() => setBusca(categoria)} type="button">{categoria}</button>
+            ))}
+          </div>
           <div className="grid gap-3">
             {filtradas.map((m) => {
               const selected = selecionadas.some((s) => s.id === m.id);
@@ -1146,10 +1629,13 @@ export default function App() {
                     <button className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl font-black ${selected ? 'bg-teal-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => marcarMusica(m)}>
                       {selected ? <Check className="h-5 w-5" /> : <Plus className="h-5 w-5" />}
                     </button>
+                    <button className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${favoritos.includes(m.id) ? 'bg-amber-300 text-slate-950' : 'bg-white/10 text-white'}`} onClick={() => alternarFavorito(m.id)} title="Favoritar" type="button">
+                      <Star className="h-5 w-5" fill={favoritos.includes(m.id) ? 'currentColor' : 'none'} />
+                    </button>
                     <div className="min-w-0 flex-1">
                       <strong className="block truncate text-base text-white">{m.titulo}</strong>
                       <span className="block truncate text-sm text-slate-300">
-                        {m.artista || 'Sem artista'} {m.categoria ? `• ${m.categoria}` : ''} {m.duracao ? `• ${m.duracao}` : ''}
+                        {m.artista || 'Sem artista'} {m.tom ? `• Tom: ${m.tom}` : ''} {m.categoria ? `• ${m.categoria}` : ''} {m.duracao ? `• ${m.duracao}` : ''}
                       </span>
                     </div>
                     <div className="flex gap-2">
@@ -1157,6 +1643,12 @@ export default function App() {
                         <button className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-red-500 text-white hover:bg-red-600" onClick={() => setPreviewMusica(m)} title="Ouvir">
                           <PlayCircle className="h-5 w-5" />
                         </button>
+                      )}
+                      {m.cifra && (
+                        <a className="flex h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-white/10 px-3 text-sm font-bold text-white hover:bg-white/20" href={m.cifra} target="_blank" rel="noopener noreferrer" title="Ver cifra">
+                          <FileText className="h-5 w-5" />
+                          Cifra
+                        </a>
                       )}
                       {isAdmin && (
                         <>
@@ -1205,6 +1697,9 @@ export default function App() {
                     <strong className="block truncate text-base text-white">{sugestao.titulo}</strong>
                     <span className="text-sm text-slate-300">{normalizarData(sugestao.data_lista)} • {sugestao.musicas.length} músicas • {sugestao.status}</span>
                   </button>
+                  <button className="mt-3 inline-flex items-center gap-1 rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-bold text-white" onClick={() => usarSugestaoComoLista(sugestao)} type="button">
+                    <RotateCcw className="h-3 w-3" /> Usar como lista
+                  </button>
                   {isAdmin && sugestao.status === 'pendente' && (
                     <div className="mt-3 grid grid-cols-2 gap-2">
                       <button className="rounded-xl bg-teal-300 px-3 py-2 text-xs font-black text-slate-950" onClick={() => decidirSugestao(sugestao.id, 'aprovada')}>Aprovar</button>
@@ -1220,8 +1715,10 @@ export default function App() {
             {sugestaoAberta ? (
               <>
                 <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-xl border border-white/10 bg-slate-950/35 p-4 text-sm leading-relaxed text-slate-100">{sugestaoTexto}</pre>
-                <div className="mt-3 grid grid-cols-2 gap-2">
+                <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
                   <button className="rounded-xl border border-white/15 bg-white/10 px-3 py-3 text-sm font-bold text-white" onClick={() => copiarTexto(sugestaoTexto)}>Copiar</button>
+                  <button className="rounded-xl border border-white/15 bg-white/10 px-3 py-3 text-sm font-bold text-white" onClick={() => exportarTextoComoPDF(sugestaoTexto, sugestaoAberta.titulo)}>PDF</button>
+                  <button className="rounded-xl border border-white/15 bg-white/10 px-3 py-3 text-sm font-bold text-white" onClick={() => usarSugestaoComoLista(sugestaoAberta)}>Duplicar</button>
                   {isAdmin && sugestaoAberta.status === 'aprovada' && (
                     <button className="rounded-xl bg-emerald-400 px-3 py-3 text-sm font-black text-slate-950" onClick={() => abrirWhatsApp(sugestaoTexto)}>WhatsApp</button>
                   )}
@@ -1248,8 +1745,17 @@ export default function App() {
           <form onSubmit={salvarMusica} className="grid gap-3">
             <input className={input} placeholder="Título da música" value={form.titulo} onChange={(e) => setForm({ ...form, titulo: e.target.value })} />
             <input className={input} placeholder="Artista / ministério" value={form.artista} onChange={(e) => setForm({ ...form, artista: e.target.value })} />
-            <input className={input} placeholder="Categoria" value={form.categoria} onChange={(e) => setForm({ ...form, categoria: e.target.value })} />
+            <div className="grid gap-2 sm:grid-cols-2">
+              <input className={input} placeholder="Categoria" value={form.categoria} onChange={(e) => setForm({ ...form, categoria: e.target.value })} />
+              <input className={input} placeholder="Tom. Ex: G, A, Dm" value={form.tom} onChange={(e) => setForm({ ...form, tom: e.target.value })} />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {categoriasRapidas.map((categoria) => (
+                <button key={categoria} className="rounded-full border border-white/15 bg-white/10 px-3 py-2 text-xs font-bold uppercase text-white" onClick={() => setForm({ ...form, categoria })} type="button">{categoria}</button>
+              ))}
+            </div>
             <input className={input} placeholder="Link do YouTube" value={form.link} onChange={(e) => setForm({ ...form, link: e.target.value })} />
+            <input className={input} placeholder="Link da cifra" value={form.cifra} onChange={(e) => setForm({ ...form, cifra: e.target.value })} />
             <input className={input} placeholder="Duração. Ex: 5:31" value={form.duracao} onChange={(e) => setForm({ ...form, duracao: e.target.value })} />
             <button className="mt-2 inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-teal-300 px-4 font-black text-slate-950" type="submit">
               <Save className="h-5 w-5" />
@@ -1643,10 +2149,91 @@ export default function App() {
                 <Play className="h-5 w-5" />
                 Abrir no YouTube
               </a>
+              {previewMusica.cifra && (
+                <a
+                  className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/10 px-4 py-3 font-bold text-white hover:bg-white/20"
+                  href={previewMusica.cifra}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <FileText className="h-5 w-5" />
+                  Abrir cifra
+                </a>
+              )}
             </div>
           </div>
         </div>
       )}
+
+
+      {/* Modal de confirmação do WhatsApp */}
+      {modalWhatsApp && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4" onClick={() => setModalWhatsApp(null)}>
+          <div className={`${panel} w-full max-w-lg`} onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-200">Confirmar envio</p>
+                <h3 className="text-xl font-black text-white">Abrir WhatsApp?</h3>
+                <p className="text-sm text-slate-300">Confira a lista antes de abrir o WhatsApp.</p>
+              </div>
+              <button className={iconButton} onClick={() => setModalWhatsApp(null)} title="Fechar"><X className="h-5 w-5" /></button>
+            </div>
+
+            <div className="mb-3 grid gap-2 rounded-2xl border border-white/10 bg-white/5 p-3 text-sm">
+              <div className="flex justify-between gap-3"><span className="text-slate-300">Lista</span><strong className="truncate text-white">{tituloLista}</strong></div>
+              <div className="flex justify-between gap-3"><span className="text-slate-300">Data</span><strong className="text-white">{normalizarData(dataLista)}</strong></div>
+              <div className="flex justify-between gap-3"><span className="text-slate-300">Total</span><strong className="text-white">{selecionadas.length || '—'} músicas</strong></div>
+              <label className="grid gap-1">
+                <span className="text-slate-300">Destino</span>
+                <select
+                  className={input}
+                  value={modalWhatsApp.destinoTipo || 'escolher'}
+                  onChange={(e) => setModalWhatsApp({ ...modalWhatsApp, destinoTipo: e.target.value })}
+                >
+                  <option value="escolher">Escolher no WhatsApp</option>
+                  <option value="numero">Enviar para numero</option>
+                  <option value="grupo">Abrir grupo</option>
+                </select>
+              </label>
+              <label className="grid gap-1">
+                <span className="text-slate-300">Telefone destino</span>
+                <input
+                  className={input}
+                  placeholder="Vazio abre sem destinatário"
+                  value={modalWhatsApp.telefone}
+                  onChange={(e) => setModalWhatsApp({ ...modalWhatsApp, telefone: e.target.value })}
+                />
+              </label>
+              {modalWhatsApp.destinoTipo === 'grupo' && (
+                <label className="grid gap-1">
+                  <span className="text-slate-300">Link do grupo</span>
+                  <input
+                    className={input}
+                    placeholder="https://chat.whatsapp.com/..."
+                    value={modalWhatsApp.linkGrupo || ''}
+                    onChange={(e) => setModalWhatsApp({ ...modalWhatsApp, linkGrupo: e.target.value })}
+                  />
+                </label>
+              )}
+            </div>
+
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-xl border border-white/10 bg-slate-950/50 p-4 text-sm leading-relaxed text-slate-100">{modalWhatsApp.texto}</pre>
+
+            <div className="mt-4 grid gap-2 sm:grid-cols-3">
+              <button className="rounded-xl bg-emerald-400 px-3 py-3 text-sm font-black text-slate-950" onClick={() => abrirWhatsAppDireto(modalWhatsApp.texto, modalWhatsApp)}>
+                Confirmar e abrir
+              </button>
+              <button className="rounded-xl border border-white/15 bg-white/10 px-3 py-3 text-sm font-bold text-white" onClick={() => copiarTexto(modalWhatsApp.texto)}>
+                Copiar mensagem
+              </button>
+              <button className="rounded-xl border border-white/15 bg-white/10 px-3 py-3 text-sm font-bold text-white" onClick={() => setModalWhatsApp(null)}>
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
