@@ -27,6 +27,7 @@ import {
   CheckCircle2,
   Clock,
   Filter,
+  KeyRound,
 } from 'lucide-react';
 import {
   BarChart,
@@ -116,8 +117,10 @@ export default function App() {
   const [loginLoading, setLoginLoading] = useState(false);
   const [authFeedback, setAuthFeedback] = useState({ tipo: '', texto: '' });
   const [emailNaoConfirmado, setEmailNaoConfirmado] = useState(false);
+  const [novaSenha, setNovaSenha] = useState('');
+  const [confirmarNovaSenha, setConfirmarNovaSenha] = useState('');
   const [databaseError, setDatabaseError] = useState('');
-  const [modoAuth, setModoAuth] = useState('login'); // 'login' ou 'cadastro'
+  const [modoAuth, setModoAuth] = useState('login'); // 'login', 'cadastro' ou 'recuperacao'
 
   const [musicas, setMusicas] = useState([]);
   const [pendentes, setPendentes] = useState([]);
@@ -171,8 +174,17 @@ export default function App() {
       setAuthLoading(false);
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, novaSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, novaSession) => {
       setSession(novaSession);
+      if (event === 'PASSWORD_RECOVERY') {
+        setModoAuth('recuperacao');
+        setSenha('');
+        setConfirmarSenha('');
+        setAuthFeedback({
+          tipo: 'aviso',
+          texto: 'Informe uma nova senha para concluir a recuperacao.',
+        });
+      }
     });
 
     return () => listener.subscription.unsubscribe();
@@ -347,6 +359,77 @@ export default function App() {
     setAuthFeedback({
       tipo: 'aviso',
       texto: 'Este e-mail ainda nao foi confirmado. Enviei um novo link de confirmacao; confirme no e-mail e tente entrar novamente. Se o link nao chegar, confirme o usuario no painel do Supabase.',
+    });
+  }
+
+  async function enviarRecuperacaoSenha() {
+    const emailRecuperacao = email.trim();
+    if (!emailRecuperacao) {
+      setAuthFeedback({ tipo: 'erro', texto: 'Informe seu e-mail para recuperar a senha.' });
+      return;
+    }
+
+    setLoginLoading(true);
+    setEmailNaoConfirmado(false);
+    setAuthFeedback({ tipo: '', texto: '' });
+
+    const { error } = await supabase.auth.resetPasswordForEmail(emailRecuperacao, {
+      redirectTo: window.location.origin,
+    });
+
+    setLoginLoading(false);
+
+    if (error) {
+      setAuthFeedback({ tipo: 'erro', texto: error.message });
+      return;
+    }
+
+    setAuthFeedback({
+      tipo: 'sucesso',
+      texto: 'Enviei o link de recuperacao. Abra o e-mail e clique no link para criar uma nova senha.',
+    });
+  }
+
+  async function atualizarSenha(e) {
+    e.preventDefault();
+
+    if (!novaSenha || !confirmarNovaSenha) {
+      setAuthFeedback({ tipo: 'erro', texto: 'Informe e confirme a nova senha.' });
+      return;
+    }
+
+    if (novaSenha !== confirmarNovaSenha) {
+      setAuthFeedback({ tipo: 'erro', texto: 'As senhas nao conferem.' });
+      return;
+    }
+
+    if (novaSenha.length < 6) {
+      setAuthFeedback({ tipo: 'erro', texto: 'A senha deve ter pelo menos 6 caracteres.' });
+      return;
+    }
+
+    setLoginLoading(true);
+    setAuthFeedback({ tipo: '', texto: '' });
+
+    const { error } = await supabase.auth.updateUser({ password: novaSenha });
+
+    if (error) {
+      setLoginLoading(false);
+      setAuthFeedback({ tipo: 'erro', texto: error.message });
+      return;
+    }
+
+    await supabase.auth.signOut();
+    setSession(null);
+    setPerfil(null);
+    setNovaSenha('');
+    setConfirmarNovaSenha('');
+    setSenha('');
+    setModoAuth('login');
+    setLoginLoading(false);
+    setAuthFeedback({
+      tipo: 'sucesso',
+      texto: 'Senha alterada com sucesso. Entre novamente usando a nova senha.',
     });
   }
 
@@ -787,6 +870,62 @@ export default function App() {
     return <div className={appShell}><section className={`${panel} mt-24`}>Carregando...</section></div>;
   }
 
+  if (modoAuth === 'recuperacao') {
+    return (
+      <div className={appShell}>
+        <section className={`${panel} mt-20`}>
+          <div className="mb-6 flex items-center gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-teal-300 text-slate-950">
+              <KeyRound className="h-6 w-6" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-black">Nova senha</h1>
+              <p className="text-sm text-slate-300">Crie uma nova senha para acessar o app.</p>
+            </div>
+          </div>
+
+          <form className="grid gap-3" onSubmit={atualizarSenha}>
+            <input
+              className={input}
+              type="password"
+              placeholder="Nova senha"
+              value={novaSenha}
+              onChange={(e) => setNovaSenha(e.target.value)}
+              minLength={6}
+            />
+            <input
+              className={input}
+              type="password"
+              placeholder="Confirmar nova senha"
+              value={confirmarNovaSenha}
+              onChange={(e) => setConfirmarNovaSenha(e.target.value)}
+              minLength={6}
+            />
+
+            {authFeedback.texto && (
+              <div
+                className={`rounded-xl border px-4 py-3 text-sm ${
+                  authFeedback.tipo === 'erro'
+                    ? 'border-red-300/30 bg-red-400/10 text-red-100'
+                    : authFeedback.tipo === 'sucesso'
+                    ? 'border-emerald-300/30 bg-emerald-400/10 text-emerald-100'
+                    : 'border-teal-200/30 bg-teal-300/10 text-teal-50'
+                }`}
+                role="status"
+              >
+                {authFeedback.texto}
+              </div>
+            )}
+
+            <button className="min-h-12 rounded-xl bg-teal-300 font-black text-slate-950" disabled={loginLoading}>
+              {loginLoading ? 'Salvando...' : 'Salvar nova senha'}
+            </button>
+          </form>
+        </section>
+      </div>
+    );
+  }
+
   if (databaseError) {
     return (
       <div className={appShell}>
@@ -839,6 +978,7 @@ export default function App() {
               onClick={() => {
                 setModoAuth('login');
                 setAuthFeedback({ tipo: '', texto: '' });
+                setEmailNaoConfirmado(false);
                 setConfirmarSenha('');
               }}
             >
@@ -849,6 +989,7 @@ export default function App() {
               onClick={() => {
                 setModoAuth('cadastro');
                 setAuthFeedback({ tipo: '', texto: '' });
+                setEmailNaoConfirmado(false);
               }}
             >
               Cadastre-se
@@ -904,6 +1045,17 @@ export default function App() {
                 ? 'Entrar'
                 : 'Cadastrar'}
             </button>
+
+            {modoAuth === 'login' && (
+              <button
+                className="min-h-11 rounded-xl border border-white/15 bg-white/10 px-4 text-sm font-bold text-white"
+                disabled={loginLoading}
+                onClick={enviarRecuperacaoSenha}
+                type="button"
+              >
+                Esqueci minha senha
+              </button>
+            )}
           </form>
         </section>
       </div>
