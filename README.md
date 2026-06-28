@@ -57,7 +57,7 @@ No final, o SQL já roda:
 ```sql
 NOTIFY pgrst, 'reload schema';
 ```
-
+fgfgg
 ## Usuário administrador
 
 Depois que o usuário fizer login uma vez, promova o e-mail dele para admin:
